@@ -46,12 +46,7 @@ bool Sequencer::isSoloed(int track) const {
     return (track >= 0 && track < tracks.size()) ? tracks[track].soloed : false;
 }
 
-bool Sequencer::hasAnyStepsOn(int track) const {
-    return (track >= 0 && track < tracks.size()) ? tracks[track].hasContent : false;
-}
-
 bool Sequencer::hasAnyActiveSteps() const {
     return std::any_of(sequence.begin(), sequence.end(),
                        [](bool step) { return step; });
 }
-

@@ -68,7 +68,7 @@ void MidiInterface::sendLedFeedback(int cc, int value) {
 // Update LEDs for a sequencer (bank or normal mode)
 void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
 {
-    // Blink logic
+    // Blink toggle
     auto now = std::chrono::steady_clock::now();
     if (std::chrono::duration_cast<std::chrono::milliseconds>(
             now - lastBlinkTime).count() >= blinkIntervalMs)
@@ -77,41 +77,45 @@ void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
         lastBlinkTime = now;
     }
 
-    if (bankModeActive && currentAction == CLEAR) {
+    if (bankModeActive) {
+        // BANK MODE: iterate tracks
         for (int track = 0; track < sequences->size(); ++track) {
             const Sequencer& seq = (*sequences)[track];
+            int ledValue = 0;
 
-            int ledValue = seq.hasAnyActiveSteps() ? (blinkFlag ? 127 : 0) : 0;
+            if (currentAction == CLEAR) {
+                // Track with content blinks
+                ledValue = seq.hasAnyActiveSteps() ? (blinkFlag ? 127 : 0) : 0;
+            }
+            else if (currentAction == MUTE) {
+                // Muted tracks blink, others solid
+                ledValue = seq.isMuted(track) ? (blinkFlag ? 127 : 0) : 127;
+            }
+            else if (currentAction == SOLO) {
+                // Soloed tracks solid, others blink
+                ledValue = seq.isSoloed(track) ? 127 : (blinkFlag ? 127 : 0);
+            }
+            else {
+                // No action → normal bank LEDs
+                ledValue = seq.hasAnyActiveSteps() ? 127 : 0;
 
-            sendLedFeedback(baseCC + track, ledValue);
+                // Selected track overrides to 74
+                if (track == *currentSequence) ledValue = 74;
+            }
+
+            sendLedFeedback(stepCCs[track], ledValue);
         }
-        return; // done
+        return; // done for bank mode
     }
 
-    // For other modes, still just show current sequence
+    // --- NORMAL SEQUENCER MODE ---
     const Sequencer& seq = (*sequences)[*currentSequence];
     const int numSteps = seq.getNumSteps();
     const int currentStep = seq.getCurrentStep();
 
     for (int step = 0; step < numSteps; ++step) {
-        int ledValue = 0;
-
-        if (bankModeActive) {
-            switch (currentAction) {
-                case MUTE:
-                    ledValue = seq.isMuted(step) ? (blinkFlag ? 127 : 0) : 127;
-                    break;
-                case SOLO:
-                    ledValue = seq.isSoloed(step) ? 127 : (blinkFlag ? 127 : 0);
-                    break;
-                default:
-                    ledValue = (step == *currentSequence) ? 70 : 0;
-            }
-        } else {
-            ledValue = seq.getStepState(step) ? 127 : 0;
-            if (step == currentStep) ledValue = 74;
-        }
-
+        int ledValue = seq.getStepState(step) ? 127 : 0;
+        if (step == currentStep) ledValue = 74; // highlight current step
         sendLedFeedback(baseCC + step, ledValue);
     }
 }
@@ -223,12 +227,11 @@ void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
 
 
 void MidiInterface::updateMenuLeds() {
+    // --- Menu buttons ---
     const std::vector<int> menuCCs = {53, 54, 55, 56};
-
     for (int cc : menuCCs) {
         int ledValue = 0;
-
-        if (cc == 53 && *bankMode) ledValue = 127;
+        if (cc == 53 && *bankMode) ledValue = 127;       // bank button LED
         else if (cc == 56 && currentAction == CLEAR) ledValue = 127;
         else if (cc == 54 && currentAction == MUTE) ledValue = 127;
         else if (cc == 55 && currentAction == SOLO) ledValue = 127;
