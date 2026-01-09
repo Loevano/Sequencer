@@ -66,70 +66,181 @@ void MidiInterface::sendLedFeedback(int cc, int value) {
 }
 
 // Update LEDs for a sequencer (bank or normal mode)
-void MidiInterface::updateSequencerLeds(const Sequencer& seq, bool bankModeActive, int baseCC) {
-    int numSteps = seq.getNumSteps();
-    int current = seq.getCurrentStep();
+void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
+{
+    // Blink logic
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - lastBlinkTime).count() >= blinkIntervalMs)
+    {
+        blinkFlag = !blinkFlag;
+        lastBlinkTime = now;
+    }
+
+    if (bankModeActive && currentAction == CLEAR) {
+        for (int track = 0; track < sequences->size(); ++track) {
+            const Sequencer& seq = (*sequences)[track];
+
+            int ledValue = seq.hasAnyActiveSteps() ? (blinkFlag ? 127 : 0) : 0;
+
+            sendLedFeedback(baseCC + track, ledValue);
+        }
+        return; // done
+    }
+
+    // For other modes, still just show current sequence
+    const Sequencer& seq = (*sequences)[*currentSequence];
+    const int numSteps = seq.getNumSteps();
+    const int currentStep = seq.getCurrentStep();
 
     for (int step = 0; step < numSteps; ++step) {
         int ledValue = 0;
 
         if (bankModeActive) {
-            // Bank mode: show selected sequence
-            if (step == *currentSequence) ledValue = 70;
-            else ledValue = 0;
+            switch (currentAction) {
+                case MUTE:
+                    ledValue = seq.isMuted(step) ? (blinkFlag ? 127 : 0) : 127;
+                    break;
+                case SOLO:
+                    ledValue = seq.isSoloed(step) ? 127 : (blinkFlag ? 127 : 0);
+                    break;
+                default:
+                    ledValue = (step == *currentSequence) ? 70 : 0;
+            }
         } else {
-            // Normal mode: show step on/off + current step
             ledValue = seq.getStepState(step) ? 127 : 0;
-            if (step == current) ledValue = 74;
+            if (step == currentStep) ledValue = 74;
         }
 
         sendLedFeedback(baseCC + step, ledValue);
     }
 }
 
+
+
+
+
 // CoreMIDI callback
-void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist, void* readProcRefCon, void* srcConnRefCon) {
+void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
+                                    void* readProcRefCon,
+                                    void* /*srcConnRefCon*/)
+{
     MidiInterface* self = static_cast<MidiInterface*>(readProcRefCon);
 
     const MIDIPacket* packet = &pktlist->packet[0];
-    for (UInt32 i = 0; i < pktlist->numPackets && packet != nullptr; ++i) {
-        UInt8* data = const_cast<UInt8*>(packet->data);
-        UInt16 length = packet->length;
 
-        if (length >= 3) {
-            UInt8 status = data[0];
-            UInt8 cc     = data[1];
-            UInt8 value  = data[2];
+    for (UInt32 i = 0; i < pktlist->numPackets; ++i) {
+        const UInt8* data = packet->data;
+        UInt8 status = data[0] & 0xF0;
 
-            if ((status & 0xF0) == 0xB0 && self->sequences) {
+        if (status == 0xB0) { // CC message
+            int cc = data[1];
+            int value = data[2];
 
-                // Handle bank modifier CC53
-                if (cc == self->bankCC) {
-                    *self->bankMode = (value > 0);
+            // -----------------------------
+            // CC53 → BANK MODE (momentary)
+            // -----------------------------
+            if (cc == 53) {
+                *self->bankMode = (value == 127);
+
+                // Release CC53 → exit all actions
+                if (value == 0) {
+                    self->currentAction = NONE;
                 }
+            }
 
-                // Step CCs
-                auto it = std::find(self->stepCCs.begin(), self->stepCCs.end(), cc);
-                if (it != self->stepCCs.end()) {
-                    int stepIndex = std::distance(self->stepCCs.begin(), it);
+            // --------------------------------
+            // ACTION BUTTONS (LATCHED)
+            // --------------------------------
+            if (*self->bankMode && value == 127) {
 
-                    if (*self->bankMode) {
-                        // Bank selection
-                        if (value == 127) { // only act on press
-                            *self->currentSequence = stepIndex;
-                            std::cout << "Switched to sequence " << *self->currentSequence << "\n";
-                        }
+                TrackAction requestedAction = NONE;
+                if (cc == 56) requestedAction = CLEAR;
+                else if (cc == 54) requestedAction = MUTE;
+                else if (cc == 55) requestedAction = SOLO;
+
+                if (requestedAction != NONE) {
+                    // Toggle behavior
+                    if (self->currentAction == requestedAction) {
+                        self->currentAction = NONE;   // exit state
                     } else {
-                        // Normal mode: toggle step only on press
-                        if (value == 127) {
-                            (*self->sequences)[*self->currentSequence].toggleStep(stepIndex);
-                            self->setLedState(cc, (*self->sequences)[*self->currentSequence].getStepState(stepIndex));
+                        self->currentAction = requestedAction; // enter state
+                    }
+                }
+            }
+
+            // --------------------------------
+            // STEP / TRACK BUTTONS (CC33–48)
+            // --------------------------------
+            auto it = std::find(self->stepCCs.begin(),
+                                self->stepCCs.end(),
+                                cc);
+
+            if (it != self->stepCCs.end() && value == 127) {
+                int index = std::distance(self->stepCCs.begin(), it);
+
+                // ----- BANK MODE -----
+                if (*self->bankMode) {
+
+                    // ACTION MODE
+                    if (self->currentAction != NONE) {
+
+                        switch (self->currentAction) {
+                            case CLEAR:
+                                (*self->sequences)[index].reset();
+                                std::cout << "Cleared track " << index << "\n";
+                                break;
+
+                            case MUTE:
+                                // future
+                                break;
+
+                            case SOLO:
+                                // future
+                                break;
+
+                            default:
+                                break;
                         }
                     }
+                    // TRACK SELECTION MODE
+                    else {
+                        *self->currentSequence = index;
+                        std::cout << "Selected track " << index << "\n";
+                    }
+                }
+
+                // ----- NORMAL MODE -----
+                else {
+                    (*self->sequences)[*self->currentSequence].toggleStep(index);
                 }
             }
         }
 
         packet = MIDIPacketNext(packet);
     }
+}
+
+
+void MidiInterface::updateMenuLeds() {
+    const std::vector<int> menuCCs = {53, 54, 55, 56};
+
+    for (int cc : menuCCs) {
+        int ledValue = 0;
+
+        if (cc == 53 && *bankMode) ledValue = 127;
+        else if (cc == 56 && currentAction == CLEAR) ledValue = 127;
+        else if (cc == 54 && currentAction == MUTE) ledValue = 127;
+        else if (cc == 55 && currentAction == SOLO) ledValue = 127;
+
+        sendLedFeedback(cc, ledValue);
+    }
+}
+
+
+TrackAction MidiInterface::getCurrentAction() const {
+    return currentAction;
+}
+void MidiInterface::setCurrentAction(TrackAction action) {
+    currentAction = action;
 }

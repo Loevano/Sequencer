@@ -24,7 +24,8 @@ int main() {
     // --- LED refresh thread ---
     std::thread ledThread([&]() {
         while (true) {
-            midi.updateSequencerLeds(sequences[currentSequence], bankMode);
+            midi.updateSequencerLeds(bankMode);
+            midi.updateMenuLeds(); // reflect bank/action states
             std::this_thread::sleep_for(std::chrono::milliseconds(20)); // 50 Hz refresh
         }
     });

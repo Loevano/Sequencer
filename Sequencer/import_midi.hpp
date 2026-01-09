@@ -2,7 +2,15 @@
 #include <CoreMIDI/CoreMIDI.h>
 #include <vector>
 #include <iostream>
+#include <chrono>
 #include "sequencer.h"
+
+enum TrackAction {
+    NONE,
+    CLEAR,
+    MUTE,
+    SOLO
+};
 
 class MidiInterface {
 public:
@@ -14,7 +22,13 @@ public:
     // LED feedback functions
     void setLedState(int cc, bool state);
     void sendLedFeedback(int cc, int value);
-    void updateSequencerLeds(const Sequencer& seq, bool bankModeActive, int baseCC = 33);
+    void updateSequencerLeds(bool bankModeActive, int baseCC = 33);
+    void updateMenuLeds();
+    
+    // --- Track action getters / setters ---
+    TrackAction getCurrentAction() const;       // get current action state
+    void setCurrentAction(TrackAction action);  // set action state
+    
 
 private:
     MIDIPortRef inputPort;
@@ -22,8 +36,10 @@ private:
     MIDIClientRef midiClient;
 
     std::vector<Sequencer>* sequences;
+    
     int* currentSequence; // index of the active sequence
     bool* bankMode;       // true if CC53 held
+    TrackAction currentAction;   // private
 
     static void midiReadCallback(const MIDIPacketList* pktlist, void* readProcRefCon, void* srcConnRefCon);
 
@@ -33,4 +49,8 @@ private:
         41, 42, 43, 44, 45, 46, 47, 48
     };
     const int bankCC = 53; // momentary button for bank selection
+    
+    bool blinkFlag = false;               // toggles for blink
+    std::chrono::steady_clock::time_point lastBlinkTime;
+    int blinkIntervalMs = 200;            // blink every 200 ms
 };

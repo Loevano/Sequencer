@@ -12,6 +12,18 @@ public:
     void printSequence() const;
     void reset();
 
+
+    
+    // Track state setters
+    void setMuted(int track, bool state);
+    void setSoloed(int track, bool state);
+    
+    // Track state getters
+    bool isMuted(int track) const;
+    bool isSoloed(int track) const;
+    bool hasAnyStepsOn(int track) const;
+    bool hasAnyActiveSteps() const;
+    
     int getNumSteps() const { return numSteps; }
     int getCurrentStep() const { return currentStep; }
     bool getStepState(int step) const {
@@ -23,5 +35,13 @@ private:
     int currentStep;
     int numSteps;
     std::vector<bool> sequence;
+    
+    struct TrackState {
+        bool muted = false;
+        bool soloed = false;
+        bool hasContent = false;
+    };
+    std::vector<TrackState> tracks; // size = numSteps
+    
 };
 
