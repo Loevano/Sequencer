@@ -26,5 +26,12 @@ private:
     std::vector<std::string> deviceNames;
     Sequencer* sequencer; // pointer to sequencer
 
+    // CoreMIDI callback
     static void midiReadCallback(const MIDIPacketList* pktlist, void* readProcRefCon, void* srcConnRefCon);
+
+    // Sequencer CC mapping (explicit)
+    const std::vector<int> stepCCs = {
+        33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48
+    };
 };

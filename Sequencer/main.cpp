@@ -22,16 +22,19 @@ int main() {
     std::cout << "Running sequencer + MIDI control... (Ctrl+C to exit)\n";
 
     while (true) {
-#if RUN_SEQUENCER
+
+    #if RUN_SEQUENCER
         seq.stepForward();
         seq.printSequence();
-        
-        // update LEDs in one call
+
+        // Update LEDs to reflect both step state and current step
         midi.updateSequencerLeds(seq);
-#endif
-#if RUN_MIDI
-        midi.readMidi(); // callback handles messages
-#endif
+    #endif
+
+    #if RUN_MIDI
+        midi.readMidi();
+    #endif
+
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
