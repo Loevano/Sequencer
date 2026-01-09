@@ -17,6 +17,8 @@ public:
     // Track state setters
     void setMuted(int track, bool state);
     void setSoloed(int track, bool state);
+    void toggleMute(int track);
+    void toggleSolo(int track);
     
     // Track state getters
     bool isMuted(int track) const;

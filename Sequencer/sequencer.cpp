@@ -38,15 +38,35 @@ void Sequencer::setSoloed(int track, bool state) {
         tracks[track].soloed = state;
 }
 
-bool Sequencer::isMuted(int track) const {
-    return (track >= 0 && track < tracks.size()) ? tracks[track].muted : false;
+void Sequencer::toggleMute(int track) {
+    if (track >= 0 && track < tracks.size())
+        tracks[track].muted = !tracks[track].muted;
 }
 
-bool Sequencer::isSoloed(int track) const {
-    return (track >= 0 && track < tracks.size()) ? tracks[track].soloed : false;
+void Sequencer::toggleSolo(int track) {
+    if (track >= 0 && track < tracks.size())
+        tracks[track].soloed = !tracks[track].soloed;
 }
-
 bool Sequencer::hasAnyActiveSteps() const {
     return std::any_of(sequence.begin(), sequence.end(),
                        [](bool step) { return step; });
+}
+
+// Sequencer.cpp
+bool Sequencer::hasAnyStepsOn(int track) const {
+    if (track >= 0 && track < tracks.size())
+        return tracks[track].hasContent;
+    return false;
+}
+
+bool Sequencer::isSoloed(int track) const {
+    if (track >= 0 && track < tracks.size())
+        return tracks[track].soloed;
+    return false;
+}
+
+bool Sequencer::isMuted(int track) const {
+    if (track >= 0 && track < tracks.size())
+        return tracks[track].muted;
+    return false;
 }

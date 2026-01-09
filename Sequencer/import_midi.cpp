@@ -78,34 +78,32 @@ void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
     }
 
     if (bankModeActive) {
-        // BANK MODE: iterate tracks
         for (int track = 0; track < sequences->size(); ++track) {
             const Sequencer& seq = (*sequences)[track];
             int ledValue = 0;
 
+            // --- Action handling ---
             if (currentAction == CLEAR) {
-                // Track with content blinks
                 ledValue = seq.hasAnyActiveSteps() ? (blinkFlag ? 127 : 0) : 0;
             }
+            // <-- THIS IS WHERE the MUTE logic goes
             else if (currentAction == MUTE) {
-                // Muted tracks blink, others solid
                 ledValue = seq.isMuted(track) ? (blinkFlag ? 127 : 0) : 127;
             }
             else if (currentAction == SOLO) {
-                // Soloed tracks solid, others blink
                 ledValue = seq.isSoloed(track) ? 127 : (blinkFlag ? 127 : 0);
             }
             else {
                 // No action → normal bank LEDs
                 ledValue = seq.hasAnyActiveSteps() ? 127 : 0;
 
-                // Selected track overrides to 74
+                // Selected track override
                 if (track == *currentSequence) ledValue = 74;
             }
 
             sendLedFeedback(stepCCs[track], ledValue);
         }
-        return; // done for bank mode
+        return; // done with bank mode
     }
 
     // --- NORMAL SEQUENCER MODE ---
@@ -196,11 +194,14 @@ void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
                                 break;
 
                             case MUTE:
-                                // future
+                                (*self->sequences)[index].toggleMute(index);
+                                std::cout << "Track " << index << " mute toggled\n";
                                 break;
 
                             case SOLO:
-                                // future
+                                // toggle solo state
+                                (*self->sequences)[index].toggleSolo(index);
+                                std::cout << "Track " << index << " solo toggled\n";
                                 break;
 
                             default:
