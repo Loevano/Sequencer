@@ -2,39 +2,43 @@
 #include "import_midi.hpp"
 #include <thread>
 #include <chrono>
-
-#define RUN_SEQUENCER 1
-#define RUN_MIDI 1
+#include <vector>
+#include <iostream>
 
 int main() {
-#if RUN_SEQUENCER
-    Sequencer seq(16);
-#endif
+    const int NUM_SEQUENCES = 16;
+    const int STEPS_PER_SEQUENCE = 16;
 
-#if RUN_MIDI
-    MidiInterface midi(&seq); // pass sequencer reference
-    if (!midi.initialize()) {
-        std::cerr << "Failed to initialize MIDI\n";
-        return 1;
-    }
-#endif
+    std::vector<Sequencer> sequences;
+    for (int i = 0; i < NUM_SEQUENCES; ++i)
+        sequences.emplace_back(STEPS_PER_SEQUENCE);
 
-    std::cout << "Running sequencer + MIDI control... (Ctrl+C to exit)\n";
+    int currentSequence = 0;
+    bool bankMode = false;
 
+    MidiInterface midi(&sequences, &currentSequence, &bankMode);
+    if (!midi.initialize()) return 1;
+
+    std::cout << "Sequencer running with LED refresh thread.\n";
+
+    // --- LED refresh thread ---
+    std::thread ledThread([&]() {
+        while (true) {
+            midi.updateSequencerLeds(sequences[currentSequence], bankMode);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20)); // 50 Hz refresh
+        }
+    });
+    ledThread.detach();
+
+    // --- Step advancement loop ---
     while (true) {
+        if (!bankMode) {
+            sequences[currentSequence].stepForward();
+        }
 
-    #if RUN_SEQUENCER
-        seq.stepForward();
-        seq.printSequence();
-
-        // Update LEDs to reflect both step state and current step
-        midi.updateSequencerLeds(seq);
-    #endif
-
-    #if RUN_MIDI
-        midi.readMidi();
-    #endif
-
+        // Sleep for 500 ms (adjust for tempo)
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+
+    return 0;
 }

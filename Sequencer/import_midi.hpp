@@ -1,37 +1,36 @@
 #pragma once
 #include <CoreMIDI/CoreMIDI.h>
-#include <iostream>
-#include <string>
 #include <vector>
+#include <iostream>
 #include "sequencer.h"
 
 class MidiInterface {
 public:
-    MidiInterface(Sequencer* seq = nullptr); // optional sequencer reference
+    MidiInterface(std::vector<Sequencer>* seqs, int* currentSeq, bool* bankMode);
     ~MidiInterface();
 
     bool initialize();
-    void readMidi(); // callback handles messages
+
+    // LED feedback functions
     void setLedState(int cc, bool state);
     void sendLedFeedback(int cc, int value);
-    
-    void updateSequencerLeds(const Sequencer& seq, int baseCC = 33);
-    
-
+    void updateSequencerLeds(const Sequencer& seq, bool bankModeActive, int baseCC = 33);
 
 private:
-    MIDIClientRef midiClient;
     MIDIPortRef inputPort;
     MIDIPortRef outputPort;
-    std::vector<std::string> deviceNames;
-    Sequencer* sequencer; // pointer to sequencer
+    MIDIClientRef midiClient;
 
-    // CoreMIDI callback
+    std::vector<Sequencer>* sequences;
+    int* currentSequence; // index of the active sequence
+    bool* bankMode;       // true if CC53 held
+
     static void midiReadCallback(const MIDIPacketList* pktlist, void* readProcRefCon, void* srcConnRefCon);
 
-    // Sequencer CC mapping (explicit)
+    // CC mapping for 16 steps
     const std::vector<int> stepCCs = {
         33, 34, 35, 36, 37, 38, 39, 40,
         41, 42, 43, 44, 45, 46, 47, 48
     };
+    const int bankCC = 53; // momentary button for bank selection
 };
