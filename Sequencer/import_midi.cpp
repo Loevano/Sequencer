@@ -2,8 +2,16 @@
 #include <algorithm>
 
 MidiInterface::MidiInterface(std::vector<Sequencer>* seqs, int* currentSeq, bool* bank)
-    : inputPort(0), outputPort(0), midiClient(0),
-      sequences(seqs), currentSequence(currentSeq), bankMode(bank) {}
+: inputPort(0),
+  outputPort(0),
+  midiClient(0),
+  sequences(seqs),
+  currentSequence(currentSeq),
+  bankMode(bank),
+  currentAction(NONE)
+{
+lastBlinkTime = std::chrono::steady_clock::now();
+}
 
 MidiInterface::~MidiInterface() {
     if (inputPort)  MIDIPortDispose(inputPort);
@@ -118,10 +126,6 @@ void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
     }
 }
 
-
-
-
-
 // CoreMIDI callback
 void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
                                     void* readProcRefCon,
@@ -139,21 +143,20 @@ void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
             int cc = data[1];
             int value = data[2];
 
-            // -----------------------------
-            // CC53 → BANK MODE (momentary)
-            // -----------------------------
+            // CC53 → BANK MODE (MOMENTARY)
             if (cc == 53) {
                 *self->bankMode = (value == 127);
 
-                // Release CC53 → exit all actions
                 if (value == 0) {
                     self->currentAction = NONE;
                 }
+
+                // FORCE refresh
+                self->updateSequencerLeds(*self->bankMode);
+                self->updateMenuLeds();
             }
 
-            // --------------------------------
             // ACTION BUTTONS (LATCHED)
-            // --------------------------------
             if (*self->bankMode && value == 127) {
 
                 TrackAction requestedAction = NONE;
@@ -162,12 +165,14 @@ void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
                 else if (cc == 55) requestedAction = SOLO;
 
                 if (requestedAction != NONE) {
-                    // Toggle behavior
-                    if (self->currentAction == requestedAction) {
-                        self->currentAction = NONE;   // exit state
-                    } else {
-                        self->currentAction = requestedAction; // enter state
-                    }
+                    if (self->currentAction == requestedAction)
+                        self->currentAction = NONE;
+                    else
+                        self->currentAction = requestedAction;
+
+                    // FORCE refresh
+                    self->updateSequencerLeds(*self->bankMode);
+                    self->updateMenuLeds();
                 }
             }
 
@@ -188,21 +193,22 @@ void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
                     if (self->currentAction != NONE) {
 
                         switch (self->currentAction) {
-                            case CLEAR:
+                            case CLEAR: {
                                 (*self->sequences)[index].reset();
                                 std::cout << "Cleared track " << index << "\n";
                                 break;
+                            }
 
-                            case MUTE:
-                                (*self->sequences)[index].toggleMute(index);
-                                std::cout << "Track " << index << " mute toggled\n";
+                            case MUTE: {
+                                bool m = (*self->sequences)[index].isMuted(index);
+                                (*self->sequences)[index].setMuted(index, !m);
                                 break;
-
-                            case SOLO:
-                                // toggle solo state
-                                (*self->sequences)[index].toggleSolo(index);
-                                std::cout << "Track " << index << " solo toggled\n";
+                            }
+                            case SOLO: {
+                                bool s = (*self->sequences)[index].isSoloed(index);
+                                (*self->sequences)[index].setSoloed(index, !s);
                                 break;
+                            }
 
                             default:
                                 break;
