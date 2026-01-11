@@ -237,8 +237,13 @@ void MidiInterface::tickStep(int step) {
     for (int t = 0; t < nTracks; ++t) {
         const Sequencer& tr = (*tracks)[t];
         if (!trackAudible(tr)) continue;
+
         if (tr.getStepOn(step)) {
-            const int vel = tr.getVelocity(step);
+            int vel = tr.getVelocity(step);
+
+            // apply per-track pot scale (CC1..16)
+            if (t < 16) vel = (vel * trackVelScale[t]) / 127;
+
             if (vel > 0) sendNoteOn(trackToNote(t), vel);
         }
     }
@@ -342,7 +347,7 @@ void MidiInterface::updateBankLeds() {
             if (i == *selected) {
                 if (t.hasSteps()) setLed(stepCCs[i], blinkOn ? "green:full" : "amber:mid");
                 else              setLed(stepCCs[i], blinkOn ? "green:full" : "off");
-            } else if (t.hasSteps()) setLed(stepCCs[i], "amber:mid");
+            } else if (t.hasSteps()) setLed(stepCCs[i], "red:mid");
             else                     setLed(stepCCs[i], "off");
             continue;
         }
@@ -418,7 +423,6 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                             if (self->transportRunning && self->playStep && self->tracks && self->selected) {
                                 self->midiClockPulses++;
                                 if (self->midiClockPulses % self->kPulsesPer16th == 0) {
-                                    // FIX: do NOT pause playback just because BANK/menu is held
                                     const int steps = (*self->tracks)[*self->selected].getNumSteps();
                                     if (steps > 0) {
                                         const int next = (*self->playStep + 1) % steps;
@@ -428,6 +432,7 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                 }
                             }
                             break;
+
                         default: break;
                     }
                 }
@@ -444,12 +449,22 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                 const int d1 = data[idx + 1];
                 const int d2 = data[idx + 2];
 
-                // ---- Only handle CCs (0xB0) coming from LCXL ----
+                // ---- Only handle CCs from LCXL ----
                 if (type == 0xB0) {
                     if (!fromLcxl) { idx += 3; continue; }
 
                     const int cc    = d1;
                     const int value = d2;
+
+                    // Pots CC1..16: per-track velocity scale
+                    if (cc >= 1 && cc <= 16) {
+                        const int t = cc - 1;
+                        if (self->tracks && t < (int)self->tracks->size()) {
+                            self->trackVelScale[t] = std::clamp(value, 0, 127);
+                        }
+                        idx += 3;
+                        continue;
+                    }
 
                     // BANK (CC53) momentary
                     if (cc == CC_BANK) {
@@ -605,6 +620,7 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
         pkt = MIDIPacketNext(pkt);
     }
 }
+
 
 // ------------------------------------------------------------
 // Stubs / velocity helpers

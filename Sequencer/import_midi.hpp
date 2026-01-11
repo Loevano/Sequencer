@@ -25,8 +25,6 @@ public:
     ~MidiInterface();
 
     bool initialize();
-
-    // call this from your clock thread (or from MIDI clock callback)
     void tickStep(int step);
 
     // LED updates
@@ -67,6 +65,12 @@ private:
     bool* bank = nullptr;
     int*  playStep = nullptr; // global playhead step
 
+    // -------- Track velocity scaling (pots CC1..16) --------
+    int trackVelScale[16] = {
+        127,127,127,127,127,127,127,127,
+        127,127,127,127,127,127,127,127
+    }; // 0..127 per track
+
     // -------- UI state --------
     Action action = NONE;
 
@@ -101,13 +105,12 @@ private:
     bool   soloClearedDuringHold = false; // set true when we clear solos while SOLO is held
 
     bool exitStateOnRelease = false;
-    bool soloButtonHeld = false; // CC55 physical hold state (only relevant while BANK is held)
+    bool soloButtonHeld = false;
 
     // -------- Sync / transport from MIDI clock (Ableton) --------
     bool useMidiClock = true;
     bool transportRunning = false;
-
-    int midiClockPulses = 0;
+    int  midiClockPulses = 0;
 
     static constexpr int kPulsesPerQuarter = 24;
     static constexpr int kPulsesPer16th    = 6;
