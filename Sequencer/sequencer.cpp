@@ -1,90 +1,71 @@
 #include "sequencer.h"
 
-// --------------------------------------------------
-// Construction
-// --------------------------------------------------
-
-Sequencer::Sequencer(int steps)
-    : currentStep(0),
-      numSteps(steps),
-      sequence(steps, false),
-      tracks(steps)
+Sequencer::Sequencer(int stepsCount)
+: numSteps(stepsCount),
+  stepVel(stepsCount, 0)
 {}
-
-// --------------------------------------------------
-// Core sequencing
-// --------------------------------------------------
 
 void Sequencer::toggleStep(int step) {
     if (step < 0 || step >= numSteps) return;
-    sequence[step] = !sequence[step];
-    tracks[step].hasContent = sequence[step];
+
+    if (stepVel[step] == 0) {
+        // default velocity when turning on
+        stepVel[step] = 100;
+    } else {
+        stepVel[step] = 0;
+    }
 }
 
-void Sequencer::setStepState(int step, bool state) {
+void Sequencer::setStepOn(int step, bool on) {
     if (step < 0 || step >= numSteps) return;
-    sequence[step] = state;
-    tracks[step].hasContent = state;
+
+    if (on) {
+        if (stepVel[step] == 0) stepVel[step] = 100;
+    } else {
+        stepVel[step] = 0;
+    }
 }
 
-void Sequencer::stepForward() {
-    currentStep = (currentStep + 1) % numSteps;
+bool Sequencer::getStepOn(int step) const {
+    if (step < 0 || step >= numSteps) return false;
+    return stepVel[step] != 0;
 }
 
-void Sequencer::reset() {
-    std::fill(sequence.begin(), sequence.end(), false);
-    for (auto& t : tracks) t.hasContent = false;
-    currentStep = 0;
+void Sequencer::setVelocity(int step, int velocity) {
+    if (step < 0 || step >= numSteps) return;
+
+    // If step is currently off, we still store velocity but do not implicitly turn it on.
+    // (You can change this if you want CC49/50 to also "arm" steps.)
+    int v = clampVel(velocity);
+    stepVel[step] = static_cast<uint8_t>(v);
 }
 
-void Sequencer::printSequence() const {
-    for (int i = 0; i < numSteps; ++i)
-        std::cout << (sequence[i] ? "X" : "-")
-                  << (i == currentStep ? "|" : " ");
-    std::cout << "\n";
+int Sequencer::getVelocity(int step) const {
+    if (step < 0 || step >= numSteps) return 0;
+    return (int)stepVel[step];
 }
 
-// --------------------------------------------------
-// Track state mutation
-// --------------------------------------------------
+void Sequencer::changeVelocity(int step, int delta) {
+    if (step < 0 || step >= numSteps) return;
 
-void Sequencer::setMuted(int track, bool state) {
-    if (track >= 0 && track < tracks.size())
-        tracks[track].muted = state;
+    int cur = (int)stepVel[step];
+    if (cur == 0) {
+        // If step is off, do nothing. (Alternative: set to default and adjust.)
+        return;
+    }
+    int next = clampVel(cur + delta);
+    stepVel[step] = static_cast<uint8_t>(next);
 }
 
-void Sequencer::setSoloed(int track, bool state) {
-    if (track >= 0 && track < tracks.size())
-        tracks[track].soloed = state;
+void Sequencer::clearSteps() {
+    std::fill(stepVel.begin(), stepVel.end(), 0);
 }
 
-void Sequencer::toggleMute(int track) {
-    if (track >= 0 && track < tracks.size())
-        tracks[track].muted = !tracks[track].muted;
+bool Sequencer::hasSteps() const {
+    return std::any_of(stepVel.begin(), stepVel.end(), [](uint8_t v){ return v != 0; });
 }
 
-void Sequencer::toggleSolo(int track) {
-    if (track >= 0 && track < tracks.size())
-        tracks[track].soloed = !tracks[track].soloed;
-}
-
-// --------------------------------------------------
-// Queries
-// --------------------------------------------------
-
-bool Sequencer::isMuted(int track) const {
-    return (track >= 0 && track < tracks.size()) ? tracks[track].muted : false;
-}
-
-bool Sequencer::isSoloed(int track) const {
-    return (track >= 0 && track < tracks.size()) ? tracks[track].soloed : false;
-}
-
-bool Sequencer::hasAnyStepsOn(int track) const {
-    return (track >= 0 && track < tracks.size()) ? tracks[track].hasContent : false;
-}
-
-bool Sequencer::hasAnyActiveSteps() const {
-    return std::any_of(sequence.begin(), sequence.end(),
-                       [](bool s) { return s; });
-}
+void Sequencer::toggleMute() { muted = !muted; }
+void Sequencer::toggleSolo() { soloed = !soloed; }
+bool Sequencer::isMuted()  const { return muted; }
+bool Sequencer::isSoloed() const { return soloed; }

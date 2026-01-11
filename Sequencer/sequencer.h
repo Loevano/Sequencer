@@ -1,58 +1,47 @@
 #pragma once
 #include <vector>
-#include <iostream>
 #include <algorithm>
+#include <cstdint>
 
-/**
- * Sequencer
- * ----------
- * Holds step data and per-track state (mute / solo / content).
- * Does NOT know anything about MIDI or UI.
- */
 class Sequencer {
 public:
-    // --- Construction ---
     explicit Sequencer(int steps = 16);
 
-    // --- Core sequencing ---
+    // --- Step on/off ---
     void toggleStep(int step);
-    void setStepState(int step, bool state);
-    void stepForward();
-    void reset();
-    void printSequence() const;
+    void setStepOn(int step, bool on);
 
-    // --- Track state control ---
-    void setMuted(int track, bool state);
-    void setSoloed(int track, bool state);
-    void toggleMute(int track);
-    void toggleSolo(int track);
+    bool getStepOn(int step) const;
 
-    // --- Queries ---
-    bool isMuted(int track) const;
-    bool isSoloed(int track) const;
-    bool hasAnyStepsOn(int track) const;
-    bool hasAnyActiveSteps() const;
+    // --- Velocity (1..127). If step is off, velocity may still be stored but is not played. ---
+    void setVelocity(int step, int velocity);   // clamps 1..127
+    int  getVelocity(int step) const;           // 0..127
+    void changeVelocity(int step, int delta);   // delta can be +/-; clamps
 
-    // --- Lightweight getters (inline) ---
-    int  getNumSteps()    const { return numSteps; }
-    int  getCurrentStep() const { return currentStep; }
+    // --- Clear / queries ---
+    void clearSteps();
+    bool hasSteps() const;
 
-    bool getStepState(int step) const {
-        return (step >= 0 && step < numSteps) ? sequence[step] : false;
-    }
+    // --- Track state ---
+    void toggleMute();
+    void toggleSolo();
+    bool isMuted() const;
+    bool isSoloed() const;
+
+    int getNumSteps() const { return numSteps; }
 
 private:
-    // --- Internal state ---
-    int currentStep = 0;
     int numSteps = 0;
 
-    std::vector<bool> sequence;
+    // 0 = off, 1..127 = velocity
+    std::vector<uint8_t> stepVel;
 
-    struct TrackState {
-        bool muted = false;
-        bool soloed = false;
-        bool hasContent = false;
-    };
+    bool muted  = false;
+    bool soloed = false;
 
-    std::vector<TrackState> tracks;
+    static int clampVel(int v) {
+        if (v < 1) return 1;
+        if (v > 127) return 127;
+        return v;
+    }
 };
