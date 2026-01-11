@@ -1,16 +1,20 @@
 #include "import_midi.hpp"
 #include <algorithm>
+#include <iostream>
 
-MidiInterface::MidiInterface(std::vector<Sequencer>* seqs, int* currentSeq, bool* bank)
-: inputPort(0),
-  outputPort(0),
-  midiClient(0),
-  sequences(seqs),
+// ==================================================
+// Construction / Destruction
+// ==================================================
+
+MidiInterface::MidiInterface(std::vector<Sequencer>* seqs,
+                             int* currentSeq,
+                             bool* bank)
+: sequences(seqs),
   currentSequence(currentSeq),
   bankMode(bank),
   currentAction(NONE)
 {
-lastBlinkTime = std::chrono::steady_clock::now();
+    lastBlinkTime = std::chrono::steady_clock::now();
 }
 
 MidiInterface::~MidiInterface() {
@@ -19,20 +23,39 @@ MidiInterface::~MidiInterface() {
     if (midiClient) MIDIClientDispose(midiClient);
 }
 
+// ==================================================
+// Initialization
+// ==================================================
+
 bool MidiInterface::initialize() {
     OSStatus result;
 
     // Create MIDI client
     result = MIDIClientCreate(CFSTR("MidiClient"), nullptr, nullptr, &midiClient);
-    if (result != noErr) { std::cerr << "Failed to create MIDI client\n"; return false; }
+    if (result != noErr) {
+        std::cerr << "Failed to create MIDI client\n";
+        return false;
+    }
 
     // Create input port
-    result = MIDIInputPortCreate(midiClient, CFSTR("InputPort"), midiReadCallback, this, &inputPort);
-    if (result != noErr) { std::cerr << "Failed to create input port\n"; return false; }
+    result = MIDIInputPortCreate(midiClient,
+                                 CFSTR("InputPort"),
+                                 midiReadCallback,
+                                 this,
+                                 &inputPort);
+    if (result != noErr) {
+        std::cerr << "Failed to create input port\n";
+        return false;
+    }
 
     // Create output port
-    result = MIDIOutputPortCreate(midiClient, CFSTR("OutputPort"), &outputPort);
-    if (result != noErr) { std::cerr << "Failed to create output port\n"; return false; }
+    result = MIDIOutputPortCreate(midiClient,
+                                  CFSTR("OutputPort"),
+                                  &outputPort);
+    if (result != noErr) {
+        std::cerr << "Failed to create output port\n";
+        return false;
+    }
 
     // Connect all MIDI sources
     ItemCount sourceCount = MIDIGetNumberOfSources();
@@ -42,21 +65,26 @@ bool MidiInterface::initialize() {
 
         CFStringRef nameRef = nullptr;
         MIDIObjectGetStringProperty(src, kMIDIPropertyName, &nameRef);
+
         char name[128] = {0};
-        if (nameRef) CFStringGetCString(nameRef, name, 128, kCFStringEncodingUTF8);
-        std::cout << "Connected to MIDI source: " << (nameRef ? name : "Unknown") << "\n";
+        if (nameRef)
+            CFStringGetCString(nameRef, name, 128, kCFStringEncodingUTF8);
+
+        std::cout << "Connected to MIDI source: "
+                  << (nameRef ? name : "Unknown") << "\n";
     }
 
     return true;
 }
 
-// Set LED on/off
-void MidiInterface::setLedState(int cc, bool state) {
-    int ledValue = state ? 127 : 0;
-    sendLedFeedback(cc, ledValue);
+// ==================================================
+// LED Helpers
+// ==================================================
+
+void MidiInterface::setLedState(int cc, bool on) {
+    sendLedFeedback(cc, on ? 127 : 0);
 }
 
-// Send raw LED CC
 void MidiInterface::sendLedFeedback(int cc, int value) {
     if (!outputPort) return;
 
@@ -64,19 +92,27 @@ void MidiInterface::sendLedFeedback(int cc, int value) {
     for (ItemCount i = 0; i < destCount; ++i) {
         MIDIEndpointRef dest = MIDIGetDestination(i);
 
-        UInt8 packetData[3] = {0xB0, UInt8(cc), UInt8(value)};
+        UInt8 data[3] = { 0xB0, UInt8(cc), UInt8(value) };
+
         MIDIPacketList packetList;
         MIDIPacket* packet = MIDIPacketListInit(&packetList);
-        packet = MIDIPacketListAdd(&packetList, sizeof(packetList), packet, 0, 3, packetData);
+        MIDIPacketListAdd(&packetList,
+                          sizeof(packetList),
+                          packet,
+                          0,
+                          3,
+                          data);
 
         MIDISend(outputPort, dest, &packetList);
     }
 }
 
-// Update LEDs for a sequencer (bank or normal mode)
-void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
-{
-    // Blink toggle
+// ==================================================
+// LED Update Logic
+// ==================================================
+
+void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC) {
+    // --- Blink timing ---
     auto now = std::chrono::steady_clock::now();
     if (std::chrono::duration_cast<std::chrono::milliseconds>(
             now - lastBlinkTime).count() >= blinkIntervalMs)
@@ -85,92 +121,123 @@ void MidiInterface::updateSequencerLeds(bool bankModeActive, int baseCC)
         lastBlinkTime = now;
     }
 
+    // --------------------------------------------------
+    // BANK MODE (TRACK VIEW)
+    // --------------------------------------------------
     if (bankModeActive) {
         for (int track = 0; track < sequences->size(); ++track) {
             const Sequencer& seq = (*sequences)[track];
             int ledValue = 0;
 
-            // --- Action handling ---
             if (currentAction == CLEAR) {
-                ledValue = seq.hasAnyActiveSteps() ? (blinkFlag ? 127 : 0) : 0;
+                ledValue = seq.hasAnyActiveSteps()
+                           ? (blinkFlag ? 127 : 0)
+                           : 0;
             }
-            // <-- THIS IS WHERE the MUTE logic goes
             else if (currentAction == MUTE) {
-                ledValue = seq.isMuted(track) ? (blinkFlag ? 127 : 0) : 127;
+                ledValue = seq.isMuted(track)
+                           ? (blinkFlag ? 127 : 0)
+                           : 127;
             }
             else if (currentAction == SOLO) {
-                ledValue = seq.isSoloed(track) ? 127 : (blinkFlag ? 127 : 0);
+                ledValue = seq.isSoloed(track)
+                           ? 127
+                           : (blinkFlag ? 127 : 0);
             }
             else {
-                // No action → normal bank LEDs
+                // Normal bank view
                 ledValue = seq.hasAnyActiveSteps() ? 127 : 0;
 
                 // Selected track override
-                if (track == *currentSequence) ledValue = 74;
+                if (track == *currentSequence)
+                    ledValue = 74;
             }
 
             sendLedFeedback(stepCCs[track], ledValue);
         }
-        return; // done with bank mode
+        return;
     }
 
-    // --- NORMAL SEQUENCER MODE ---
+    // --------------------------------------------------
+    // NORMAL MODE (STEP VIEW)
+    // --------------------------------------------------
     const Sequencer& seq = (*sequences)[*currentSequence];
     const int numSteps = seq.getNumSteps();
     const int currentStep = seq.getCurrentStep();
 
     for (int step = 0; step < numSteps; ++step) {
         int ledValue = seq.getStepState(step) ? 127 : 0;
-        if (step == currentStep) ledValue = 74; // highlight current step
+        if (step == currentStep)
+            ledValue = 74;
+
         sendLedFeedback(baseCC + step, ledValue);
     }
 }
 
-// CoreMIDI callback
+void MidiInterface::updateMenuLeds() {
+    const std::vector<int> menuCCs = {53, 54, 55, 56};
+
+    for (int cc : menuCCs) {
+        int ledValue = 0;
+
+        if (cc == 53 && *bankMode)              ledValue = 127;
+        else if (cc == 56 && currentAction == CLEAR) ledValue = 127;
+        else if (cc == 54 && currentAction == MUTE)  ledValue = 127;
+        else if (cc == 55 && currentAction == SOLO)  ledValue = 127;
+
+        sendLedFeedback(cc, ledValue);
+    }
+}
+
+// ==================================================
+// CoreMIDI Callback
+// ==================================================
+
 void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
-                                    void* readProcRefCon,
-                                    void* /*srcConnRefCon*/)
+                                     void* readProcRefCon,
+                                     void*)
 {
-    MidiInterface* self = static_cast<MidiInterface*>(readProcRefCon);
+    MidiInterface* self =
+        static_cast<MidiInterface*>(readProcRefCon);
 
     const MIDIPacket* packet = &pktlist->packet[0];
 
     for (UInt32 i = 0; i < pktlist->numPackets; ++i) {
         const UInt8* data = packet->data;
-        UInt8 status = data[0] & 0xF0;
 
-        if (status == 0xB0) { // CC message
-            int cc = data[1];
+        if ((data[0] & 0xF0) == 0xB0) { // CC message
+            int cc    = data[1];
             int value = data[2];
 
-            // CC53 → BANK MODE (MOMENTARY)
+            // --------------------------------
+            // BANK BUTTON (CC53, momentary)
+            // --------------------------------
             if (cc == 53) {
                 *self->bankMode = (value == 127);
 
-                if (value == 0) {
+                if (value == 0)
                     self->currentAction = NONE;
-                }
 
-                // FORCE refresh
                 self->updateSequencerLeds(*self->bankMode);
                 self->updateMenuLeds();
             }
 
-            // ACTION BUTTONS (LATCHED)
+            // --------------------------------
+            // ACTION BUTTONS (latched)
+            // --------------------------------
             if (*self->bankMode && value == 127) {
+                TrackAction requested = NONE;
 
-                TrackAction requestedAction = NONE;
-                if (cc == 56) requestedAction = CLEAR;
-                else if (cc == 54) requestedAction = MUTE;
-                else if (cc == 55) requestedAction = SOLO;
+                if (cc == 56) requested = CLEAR;
+                else if (cc == 54) requested = MUTE;
+                else if (cc == 55) requested = SOLO;
 
-                if (requestedAction != NONE) {
-                    if (self->currentAction == requestedAction)
-                        self->currentAction = NONE;
-                    else
-                        self->currentAction = requestedAction;
+                if (requested != NONE) {
+                    self->currentAction =
+                        (self->currentAction == requested)
+                        ? NONE
+                        : requested;
 
-                    // FORCE refresh
                     self->updateSequencerLeds(*self->bankMode);
                     self->updateMenuLeds();
                 }
@@ -186,71 +253,32 @@ void MidiInterface::midiReadCallback(const MIDIPacketList* pktlist,
             if (it != self->stepCCs.end() && value == 127) {
                 int index = std::distance(self->stepCCs.begin(), it);
 
-                // ----- BANK MODE -----
                 if (*self->bankMode) {
-
                     // ACTION MODE
                     if (self->currentAction != NONE) {
+                        Sequencer& seq = (*self->sequences)[index];
 
                         switch (self->currentAction) {
-                            case CLEAR: {
-                                (*self->sequences)[index].reset();
-                                std::cout << "Cleared track " << index << "\n";
-                                break;
-                            }
-
-                            case MUTE: {
-                                bool m = (*self->sequences)[index].isMuted(index);
-                                (*self->sequences)[index].setMuted(index, !m);
-                                break;
-                            }
-                            case SOLO: {
-                                bool s = (*self->sequences)[index].isSoloed(index);
-                                (*self->sequences)[index].setSoloed(index, !s);
-                                break;
-                            }
-
-                            default:
-                                break;
+                            case CLEAR: seq.reset(); break;
+                            case MUTE:  seq.toggleMute(index); break;
+                            case SOLO:  seq.toggleSolo(index); break;
+                            default: break;
                         }
                     }
-                    // TRACK SELECTION MODE
+                    // TRACK SELECT MODE
                     else {
                         *self->currentSequence = index;
                         std::cout << "Selected track " << index << "\n";
                     }
                 }
-
-                // ----- NORMAL MODE -----
+                // NORMAL STEP MODE
                 else {
-                    (*self->sequences)[*self->currentSequence].toggleStep(index);
+                    (*self->sequences)[*self->currentSequence]
+                        .toggleStep(index);
                 }
             }
         }
 
         packet = MIDIPacketNext(packet);
     }
-}
-
-
-void MidiInterface::updateMenuLeds() {
-    // --- Menu buttons ---
-    const std::vector<int> menuCCs = {53, 54, 55, 56};
-    for (int cc : menuCCs) {
-        int ledValue = 0;
-        if (cc == 53 && *bankMode) ledValue = 127;       // bank button LED
-        else if (cc == 56 && currentAction == CLEAR) ledValue = 127;
-        else if (cc == 54 && currentAction == MUTE) ledValue = 127;
-        else if (cc == 55 && currentAction == SOLO) ledValue = 127;
-
-        sendLedFeedback(cc, ledValue);
-    }
-}
-
-
-TrackAction MidiInterface::getCurrentAction() const {
-    return currentAction;
-}
-void MidiInterface::setCurrentAction(TrackAction action) {
-    currentAction = action;
 }

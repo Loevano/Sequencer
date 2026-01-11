@@ -1,49 +1,58 @@
 #pragma once
 #include <vector>
 #include <iostream>
+#include <algorithm>
 
+/**
+ * Sequencer
+ * ----------
+ * Holds step data and per-track state (mute / solo / content).
+ * Does NOT know anything about MIDI or UI.
+ */
 class Sequencer {
 public:
-    Sequencer(int steps = 16);
+    // --- Construction ---
+    explicit Sequencer(int steps = 16);
 
+    // --- Core sequencing ---
     void toggleStep(int step);
     void setStepState(int step, bool state);
     void stepForward();
-    void printSequence() const;
     void reset();
+    void printSequence() const;
 
-
-    
-    // Track state setters
+    // --- Track state control ---
     void setMuted(int track, bool state);
     void setSoloed(int track, bool state);
     void toggleMute(int track);
     void toggleSolo(int track);
-    
-    // Track state getters
+
+    // --- Queries ---
     bool isMuted(int track) const;
     bool isSoloed(int track) const;
     bool hasAnyStepsOn(int track) const;
     bool hasAnyActiveSteps() const;
-    
-    int getNumSteps() const { return numSteps; }
-    int getCurrentStep() const { return currentStep; }
+
+    // --- Lightweight getters (inline) ---
+    int  getNumSteps()    const { return numSteps; }
+    int  getCurrentStep() const { return currentStep; }
+
     bool getStepState(int step) const {
-        if (step >= 0 && step < numSteps) return sequence[step];
-        return false;
+        return (step >= 0 && step < numSteps) ? sequence[step] : false;
     }
 
 private:
-    int currentStep;
-    int numSteps;
+    // --- Internal state ---
+    int currentStep = 0;
+    int numSteps = 0;
+
     std::vector<bool> sequence;
-    
+
     struct TrackState {
         bool muted = false;
         bool soloed = false;
         bool hasContent = false;
     };
-    std::vector<TrackState> tracks; // size = numSteps
-    
-};
 
+    std::vector<TrackState> tracks;
+};
