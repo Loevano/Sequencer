@@ -1,3 +1,4 @@
+// ========================= sequencer.h =========================
 #pragma once
 #include <vector>
 #include <algorithm>
@@ -10,13 +11,12 @@ public:
     // --- Step on/off ---
     void toggleStep(int step);
     void setStepOn(int step, bool on);
-
     bool getStepOn(int step) const;
 
-    // --- Velocity (1..127). If step is off, velocity may still be stored but is not played. ---
+    // --- Velocity (1..127). 0 means OFF. ---
     void setVelocity(int step, int velocity);   // clamps 1..127
     int  getVelocity(int step) const;           // 0..127
-    void changeVelocity(int step, int delta);   // delta can be +/-; clamps
+    void changeVelocity(int step, int delta);   // clamps, no-op if off
 
     // --- Clear / queries ---
     void clearSteps();

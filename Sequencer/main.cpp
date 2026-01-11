@@ -24,15 +24,21 @@ int main() {
 
     std::atomic<bool> running{true};
 
-    // Clock thread (tempo)
     std::thread clockThread([&](){
         while (running) {
-            if (!bankMode) {
-                globalStep = (globalStep + 1) % STEPS;
+            if (!midi.isUsingMidiClock()) { // only run internal clock when NOT syncing
+                if (!bankMode) {
+                    globalStep = (globalStep + 1) % STEPS;
+                    midi.tickStep(globalStep);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            } else {
+                // synced mode: do nothing here; MIDI clock drives everything
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(150)); // tempo
         }
     });
+
 
     // LED thread (fast UI)
     std::thread ledThread([&](){

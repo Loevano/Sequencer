@@ -1,20 +1,83 @@
+// ========================= import_midi.cpp =========================
 #include "import_midi.hpp"
-#include <algorithm>
-#include <iostream>
 
+#include <algorithm>
+#include <chrono>
+#include <iostream>
+#include <string_view>
+
+// ------------------------------------------------------------
 // Menu CCs (your mapping)
+// ------------------------------------------------------------
 static constexpr int CC_BANK  = 53;
 static constexpr int CC_MUTE  = 54;
 static constexpr int CC_SOLO  = 55;
 static constexpr int CC_CLEAR = 56;
 
-static constexpr int CC_SEND_SELECT_1  = 49;
-static constexpr int CC_SEND_SELECT_2  = 50;
-static constexpr int CC_USER_BTN_1     = 51; // labeled "Track Select" on hardware
-static constexpr int CC_USER_BTN_2     = 52; // labeled "Track Select" on hardware
+static constexpr int CC_SEND_SELECT_1 = 49;
+static constexpr int CC_SEND_SELECT_2 = 50;
+static constexpr int CC_USER_BTN_1    = 51; // labeled "Track Select" on hardware
+static constexpr int CC_USER_BTN_2    = 52; // labeled "Track Select" on hardware
 
-static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1, 1 = channel 2, ... 15 = channel 16
+static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 
+static constexpr intptr_t SRC_LCXL  = 1;
+static constexpr intptr_t SRC_CLOCK = 2;
+
+// ------------------------------------------------------------
+// Helpers (device discovery / debug)
+// ------------------------------------------------------------
+static bool endpointNameContains(MIDIEndpointRef ep, std::string_view needle) {
+    CFStringRef cfName = nullptr;
+    if (MIDIObjectGetStringProperty(ep, kMIDIPropertyName, &cfName) != noErr || !cfName) return false;
+
+    char name[256];
+    const bool ok = CFStringGetCString(cfName, name, sizeof(name), kCFStringEncodingUTF8);
+    CFRelease(cfName);
+
+    return ok && (std::string_view{name}.find(needle) != std::string_view::npos);
+}
+
+static void printMidiSourcesOnce() {
+    const ItemCount nSrc = MIDIGetNumberOfSources();
+    std::cout << "---- MIDI Sources (" << nSrc << ") ----\n";
+    for (ItemCount i = 0; i < nSrc; ++i) {
+        MIDIEndpointRef src = MIDIGetSource(i);
+        CFStringRef cfName = nullptr;
+        if (MIDIObjectGetStringProperty(src, kMIDIPropertyName, &cfName) == noErr && cfName) {
+            char name[256];
+            if (CFStringGetCString(cfName, name, sizeof(name), kCFStringEncodingUTF8))
+                std::cout << "Source[" << i << "]: " << name << "\n";
+            CFRelease(cfName);
+        }
+    }
+}
+
+static void printMidiDestinationsOnce() {
+    const ItemCount nDest = MIDIGetNumberOfDestinations();
+    std::cout << "---- MIDI Destinations (" << nDest << ") ----\n";
+    for (ItemCount i = 0; i < nDest; ++i) {
+        MIDIEndpointRef dst = MIDIGetDestination(i);
+        CFStringRef cfName = nullptr;
+        if (MIDIObjectGetStringProperty(dst, kMIDIPropertyName, &cfName) == noErr && cfName) {
+            char name[256];
+            if (CFStringGetCString(cfName, name, sizeof(name), kCFStringEncodingUTF8))
+                std::cout << "Dest[" << i << "]: " << name << "\n";
+            CFRelease(cfName);
+        }
+    }
+}
+
+static Action actionFromCc(int cc) {
+    if (cc == CC_MUTE)  return MUTE;
+    if (cc == CC_SOLO)  return SOLO;
+    if (cc == CC_CLEAR) return CLEAR;
+    return NONE;
+}
+
+// ------------------------------------------------------------
+// Ctor / dtor / init
+// ------------------------------------------------------------
 MidiInterface::MidiInterface(std::vector<Sequencer>* t,
                              int* s,
                              bool* b,
@@ -23,9 +86,11 @@ MidiInterface::MidiInterface(std::vector<Sequencer>* t,
 {}
 
 MidiInterface::~MidiInterface() {
-    if (inputPort)  MIDIPortDispose(inputPort);
-    if (outputPort) MIDIPortDispose(outputPort);
-    if (client)     MIDIClientDispose(client);
+    if (inputPort)     MIDIPortDispose(inputPort);
+    if (outputPort)    MIDIPortDispose(outputPort);
+    if (virtualDest)   MIDIEndpointDispose(virtualDest);
+    if (virtualSource) MIDIEndpointDispose(virtualSource);
+    if (client)        MIDIClientDispose(client);
 }
 
 bool MidiInterface::initialize() {
@@ -40,49 +105,151 @@ bool MidiInterface::initialize() {
     r = MIDIOutputPortCreate(client, CFSTR("out"), &outputPort);
     if (r != noErr) { std::cerr << "MIDIOutputPortCreate failed\n"; return false; }
 
+    r = MIDISourceCreate(client, CFSTR("Sequencer Out"), &virtualSource);
+    if (r != noErr) { std::cerr << "MIDISourceCreate failed\n"; return false; }
+
+    // Virtual IN from Ableton (must have callback)
+    r = MIDIDestinationCreate(client, CFSTR("Sequencer In"), midiCallback, this, &virtualDest);
+    if (r != noErr) { std::cerr << "MIDIDestinationCreate failed\n"; return false; }
+
+    printMidiSourcesOnce();
+    printMidiDestinationsOnce();
+
+    bool connectedLcxl  = false;
+    bool connectedClock = false;
+
     const ItemCount nSrc = MIDIGetNumberOfSources();
     for (ItemCount i = 0; i < nSrc; ++i) {
-        MIDIPortConnectSource(inputPort, MIDIGetSource(i), nullptr);
+        MIDIEndpointRef src = MIDIGetSource(i);
+
+        if (endpointNameContains(src, "Launch Control XL")) {
+            if (MIDIPortConnectSource(inputPort, src, (void*)SRC_LCXL) == noErr) {
+                connectedLcxl = true;
+                std::cout << "Connected to Launch Control XL (Source[" << i << "])\n";
+            }
+        }
+
+        // You used "MIDI Port" as your clock source label — keep it as-is.
+        if (endpointNameContains(src, "MIDI Port")) {
+            if (MIDIPortConnectSource(inputPort, src, (void*)SRC_CLOCK) == noErr) {
+                connectedClock = true;
+                std::cout << "Connected to MIDI Port (Source[" << i << "])\n";
+            }
+        }
     }
 
+    if (!connectedLcxl)  std::cerr << "ERROR: Launch Control XL not connected\n";
+    if (!connectedClock) std::cerr << "WARNING: MIDI Port (clock) not connected\n";
+
+    // Fallback: connect everything if LCXL wasn't matched
+    if (!connectedLcxl) {
+        std::cerr << "Warning: no Launch Control source matched. Connecting ALL sources.\n";
+        for (ItemCount i = 0; i < nSrc; ++i) {
+            MIDIPortConnectSource(inputPort, MIDIGetSource(i), nullptr);
+        }
+    }
+
+    std::cout << "Virtual ports created: Sequencer In (from Ableton), Sequencer Out (to Ableton)\n";
     return true;
 }
 
-void MidiInterface::sendCC(int cc, int value) {
-    if (!outputPort) return;
+// ------------------------------------------------------------
+// MIDI sending
+// ------------------------------------------------------------
+void MidiInterface::sendMsg3(UInt8 status, UInt8 data1, UInt8 data2) {
+    if (!virtualSource && !outputPort) return;
 
-
-    UInt8 data[3] = { static_cast<UInt8>(0xB0 | MIDI_CH),
-                      static_cast<UInt8>(cc),
-                      static_cast<UInt8>(value) };
+    UInt8 data[3] = { status, data1, data2 };
 
     MIDIPacketList packetList;
     MIDIPacket* packet = MIDIPacketListInit(&packetList);
     MIDIPacketListAdd(&packetList, sizeof(packetList), packet, 0, 3, data);
 
-    const ItemCount nDest = MIDIGetNumberOfDestinations();
-    for (ItemCount i = 0; i < nDest; ++i) {
-        MIDISend(outputPort, MIDIGetDestination(i), &packetList);
+    // Virtual source -> Ableton / other apps
+    if (virtualSource) MIDIReceived(virtualSource, &packetList);
+
+    // Optional: mirror to hardware destinations (same behavior as your original)
+    if (outputPort) {
+        const ItemCount nDest = MIDIGetNumberOfDestinations();
+        for (ItemCount i = 0; i < nDest; ++i)
+            MIDISend(outputPort, MIDIGetDestination(i), &packetList);
     }
 }
 
+void MidiInterface::sendCC(int cc, int value) {
+    value = std::clamp(value, 0, 127);
+    sendMsg3((UInt8)(0xB0 | MIDI_CH), (UInt8)cc, (UInt8)value);
+}
+
+void MidiInterface::sendNoteOn(int note, int vel) {
+    note = std::clamp(note, 0, 127);
+    vel  = std::clamp(vel, 1, 127);
+    sendMsg3((UInt8)(0x90 | MIDI_CH), (UInt8)note, (UInt8)vel);
+}
+
+void MidiInterface::sendNoteOff(int note) {
+    note = std::clamp(note, 0, 127);
+    sendMsg3((UInt8)(0x80 | MIDI_CH), (UInt8)note, 0);
+}
+
+void MidiInterface::allNotesOff() {
+    if (!tracks) return;
+    for (int t = 0; t < (int)tracks->size(); ++t)
+        sendNoteOff(trackToNote(t));
+    sendCC(123, 0); // CC123 All Notes Off (safety net)
+}
+
 // ------------------------------------------------------------
-// Launch Control XL LED encoding (Launchpad LED protocol)
-//
-// value = flags + (16 * greenLevel) + redLevel
-// greenLevel/redLevel are 0..3. Flags commonly 12 for normal use,
-// or 8 to use the flashing table (if flashing is configured).
-// :contentReference[oaicite:2]{index=2}
+// Audio/mixer logic
+// ------------------------------------------------------------
+bool MidiInterface::anyTrackSoloed() const {
+    if (!tracks) return false;
+    for (const auto& tr : *tracks)
+        if (tr.isSoloed()) return true;
+    return false;
+}
+
+bool MidiInterface::trackAudible(const Sequencer& tr) const {
+    const bool anySolo = anyTrackSoloed();
+    if (tr.isMuted()) return false;
+    if (anySolo && !tr.isSoloed()) return false;
+    return true;
+}
+
+// ------------------------------------------------------------
+// Tick (called from MIDI clock or internal clock)
+// ------------------------------------------------------------
+void MidiInterface::tickStep(int step) {
+    if (!tracks) return;
+    const int nTracks = (int)tracks->size();
+    if (nTracks <= 0) return;
+
+    // Note OFF previous step (1-step gate)
+    if (lastTickStep >= 0) {
+        for (int t = 0; t < nTracks; ++t) {
+            const Sequencer& tr = (*tracks)[t];
+            if (!trackAudible(tr)) continue;
+            if (tr.getStepOn(lastTickStep)) sendNoteOff(trackToNote(t));
+        }
+    }
+
+    // Note ON current step
+    for (int t = 0; t < nTracks; ++t) {
+        const Sequencer& tr = (*tracks)[t];
+        if (!trackAudible(tr)) continue;
+        if (tr.getStepOn(step)) {
+            const int vel = tr.getVelocity(step);
+            if (vel > 0) sendNoteOn(trackToNote(t), vel);
+        }
+    }
+
+    lastTickStep = step;
+}
+
+// ------------------------------------------------------------
+// Launch Control XL LED encoding
 // ------------------------------------------------------------
 int MidiInterface::lcxlLedValue(std::string_view spec) const {
-    // spec examples:
-    // "off"
-    // "green:full"
-    // "red:low"
-    // "amber:mid"
-    // "yellow:full"
-    // "amber:full:flash"
-
     auto eq = [](std::string_view a, std::string_view b){ return a == b; };
 
     std::string_view color = "off";
@@ -105,34 +272,23 @@ int MidiInterface::lcxlLedValue(std::string_view spec) const {
         start = end + 1;
     }
 
-    if (eq(color, "off")) return 0; // easiest/cleanest off
+    if (eq(color, "off")) return 0;
 
     int lv = 3;
     if (eq(level, "low")) lv = 1;
     else if (eq(level, "mid")) lv = 2;
-    else lv = 3;
 
     int red = 0, green = 0;
-
-    if (eq(color, "red")) {
-        red = lv; green = 0;
-    } else if (eq(color, "green")) {
-        red = 0; green = lv;
-    } else if (eq(color, "amber")) {
-        red = lv; green = lv;
-    } else if (eq(color, "yellow")) {
-        // "yellow" as stronger green with some red; tweak if you prefer:
-        red = (lv >= 2 ? 2 : 1);
+    if (eq(color, "red"))        { red = lv; green = 0; }
+    else if (eq(color, "green")) { red = 0;  green = lv; }
+    else if (eq(color, "amber")) { red = lv; green = lv; }
+    else if (eq(color, "yellow")) {
+        red   = (lv >= 2 ? 2 : 1);
         green = lv;
     }
 
     const int flags = flash ? 8 : 12;
-    int value = flags + (16 * green) + red;
-
-    // clamp to MIDI 0..127
-    if (value < 0) value = 0;
-    if (value > 127) value = 127;
-    return value;
+    return std::clamp(flags + (16 * green) + red, 0, 127);
 }
 
 void MidiInterface::setLed(int cc, std::string_view spec) {
@@ -143,40 +299,36 @@ void MidiInterface::setLed(int cc, std::string_view spec) {
 // LED Updates
 // ------------------------------------------------------------
 void MidiInterface::updateMenuLeds() {
-    // BANK LED: on while held
+    if (!bank) return;
     setLed(CC_BANK, *bank ? "green:full" : "off");
-
-    // Action LEDs: on when selected (while bank held)
     setLed(CC_MUTE,  (action == MUTE)  ? "amber:full" : "off");
     setLed(CC_SOLO,  (action == SOLO)  ? "amber:full" : "off");
     setLed(CC_CLEAR, (action == CLEAR) ? "amber:full" : "off");
 }
 
 void MidiInterface::updateStepLeds(int baseCC) {
+    if (!tracks || !selected || !playStep) return;
+
     const Sequencer& seq = (*tracks)[*selected];
     const int steps = seq.getNumSteps();
+    if (steps <= 0) return;
+
     const int cur = (*playStep) % steps;
 
     for (int i = 0; i < steps; ++i) {
-        // Playhead overrides everything
-        if (i == cur) {
-            setLed(baseCC + i, "red:full");
-            continue;
-        }
+        if (i == cur) { setLed(baseCC + i, "red:full"); continue; }
 
         const int v = seq.getVelocity(i);
-
         if (v == 0) setLed(baseCC + i, "off");
         else if (v <= kVelLevels[0]) setLed(baseCC + i, "amber:low");
         else if (v <= kVelLevels[1]) setLed(baseCC + i, "amber:mid");
         else setLed(baseCC + i, "amber:full");
-
     }
 }
 
-
 void MidiInterface::updateBankLeds() {
-    // blink timing
+    if (!tracks || !selected) return;
+
     auto now = std::chrono::steady_clock::now();
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastBlink).count() >= blinkIntervalMs) {
         blinkOn = !blinkOn;
@@ -186,49 +338,26 @@ void MidiInterface::updateBankLeds() {
     for (int i = 0; i < (int)tracks->size(); ++i) {
         const Sequencer& t = (*tracks)[i];
 
-        // Default in bank mode: track selection
         if (action == NONE) {
             if (i == *selected) {
-                if (t.hasSteps()) {
-                    // Selected track WITH notes:
-                    // blink GREEN <-> AMBER
-                    setLed(stepCCs[i], blinkOn ? "green:full" : "amber:mid");
-                } else {
-                    // Selected track WITHOUT notes:
-                    // blink GREEN <-> OFF
-                    setLed(stepCCs[i], blinkOn ? "green:full" : "off");
-                }
-            } else if (t.hasSteps()) {
-                // Non-selected track with notes
-                setLed(stepCCs[i], "amber:mid");
-            } else {
-                // Empty non-selected track
-                setLed(stepCCs[i], "off");
-            }
+                if (t.hasSteps()) setLed(stepCCs[i], blinkOn ? "green:full" : "amber:mid");
+                else              setLed(stepCCs[i], blinkOn ? "green:full" : "off");
+            } else if (t.hasSteps()) setLed(stepCCs[i], "amber:mid");
+            else                     setLed(stepCCs[i], "off");
             continue;
         }
-        
-        // Requested per-state behaviour:
+
         switch (action) {
             case MUTE:
-                // mute OFF -> LED ON
-                // mute ON  -> LED BLINKING
                 if (!t.isMuted()) setLed(stepCCs[i], "green:full");
-                else setLed(stepCCs[i], blinkOn ? "red:full" : "off");
+                else              setLed(stepCCs[i], blinkOn ? "red:full" : "off");
                 break;
-
             case SOLO:
-                // solo ON  -> LED BLINKING
-                // solo OFF -> LED OFF
                 setLed(stepCCs[i], t.isSoloed() ? (blinkOn ? "amber:full" : "off") : "off");
                 break;
-
             case CLEAR:
-                // has notes -> LED BLINKING
-                // no notes  -> LED OFF
                 setLed(stepCCs[i], t.hasSteps() ? (blinkOn ? "amber:full" : "off") : "off");
                 break;
-
             default:
                 setLed(stepCCs[i], "off");
                 break;
@@ -236,293 +365,282 @@ void MidiInterface::updateBankLeds() {
     }
 }
 
+// ------------------------------------------------------------
+// MIDI callback (buttons + MIDI clock sync) [SOURCE-TAGGED]
+// ------------------------------------------------------------
 void MidiInterface::midiCallback(const MIDIPacketList* list,
-                                 void* ref,
-                                 void*)
+                                 void* refCon,
+                                 void* srcConnRefCon)
 {
-    auto* self = static_cast<MidiInterface*>(ref);
+    auto* self = static_cast<MidiInterface*>(refCon);
+    if (!self) return;
+
+    const intptr_t srcTag = (intptr_t)srcConnRefCon;
+    const bool fromLcxl  = (srcTag == SRC_LCXL);
+    const bool fromClock = (srcTag == SRC_CLOCK);
+
     const MIDIPacket* pkt = &list->packet[0];
 
-    auto actionFromCc = [](int cc) -> Action {
-        if (cc == CC_MUTE)  return MUTE;
-        if (cc == CC_SOLO)  return SOLO;
-        if (cc == CC_CLEAR) return CLEAR;
-        return NONE;
-    };
+    auto isPress   = [](int v){ return v == 127; };
+    auto isRelease = [](int v){ return v == 0;   };
 
-    for (UInt32 i = 0; i < list->numPackets; ++i) {
-        const UInt8* d = pkt->data;
+    for (UInt32 p = 0; p < list->numPackets; ++p) {
+        const UInt8* data = pkt->data;
+        const UInt16 len  = pkt->length;
 
-        if ((d[0] & 0xF0) == 0xB0) { // CC
-            const int cc    = d[1];
-            const int value = d[2];  // 127 press, 0 release (LCXL template)
+        for (UInt16 idx = 0; idx < len; ) {
+            const UInt8 status = data[idx];
 
-            // ------------------------------------------------------------
-            // BANK (CC53) momentary
-            // ------------------------------------------------------------
-            if (cc == CC_BANK) {
-                *self->bank = (value == 127);
+            // -------- System Real-Time (1 byte) --------
+            if (status >= 0xF8) {
+                if (!fromClock) { idx += 1; continue; }
 
-                if (value == 0) {
-                    // leaving menu: return to note edit mode
-                    self->action = NONE;
+                if (self->useMidiClock) {
+                    switch (status) {
+                        case 0xFA: // Start
+                            self->transportRunning = true;
+                            self->midiClockPulses = 0;
+                            if (self->playStep) *self->playStep = 0;
+                            self->lastTickStep = -1;
+                            self->allNotesOff();
+                            break;
 
-                    // reset state-exit bookkeeping
-                    self->exitStateOnRelease = false;
-                    self->heldStateCc = -1;
-                    self->heldStateAction = NONE;
-                    self->soloClearedDuringHold = false;
+                        case 0xFB: // Continue
+                            self->transportRunning = true;
+                            break;
 
-                    // reset SOLO physical hold
-                    self->soloButtonHeld = false;
+                        case 0xFC: // Stop
+                            self->transportRunning = false;
+                            self->allNotesOff();
+                            break;
+
+                        case 0xF8: // Clock pulse
+                            if (self->transportRunning && self->playStep && self->tracks && self->selected) {
+                                self->midiClockPulses++;
+                                if (self->midiClockPulses % self->kPulsesPer16th == 0) {
+                                    // FIX: do NOT pause playback just because BANK/menu is held
+                                    const int steps = (*self->tracks)[*self->selected].getNumSteps();
+                                    if (steps > 0) {
+                                        const int next = (*self->playStep + 1) % steps;
+                                        *self->playStep = next;
+                                        self->tickStep(next);
+                                    }
+                                }
+                            }
+                            break;
+                        default: break;
+                    }
                 }
 
-                pkt = MIDIPacketNext(pkt);
+                idx += 1;
                 continue;
             }
 
-            // ------------------------------------------------------------
-            // Velocity up/down (CC49/50) - step mode only, press only
-            // ------------------------------------------------------------
-            if (value == 127 && !(*self->bank)) {
-                if (cc == CC_SEND_SELECT_1) { // 49 higher
-                    self->applyVelLevelToHeld(+1);
-                    pkt = MIDIPacketNext(pkt);
-                    continue;
-                }
-                if (cc == CC_SEND_SELECT_2) { // 50 lower
-                    self->applyVelLevelToHeld(-1);
-                    pkt = MIDIPacketNext(pkt);
-                    continue;
-                }
-            }
+            // -------- Channel Voice 3-byte --------
+            const UInt8 type = status & 0xF0;
+            if (type == 0xB0 || type == 0x90 || type == 0x80) {
+                if (idx + 2 >= len) break;
 
-            // ------------------------------------------------------------
-            // Free buttons (CC51/52) press only
-            // ------------------------------------------------------------
-            if (value == 127 && (cc == CC_USER_BTN_1 || cc == CC_USER_BTN_2)) {
-                self->handleUserButton(cc);
-                pkt = MIDIPacketNext(pkt);
-                continue;
-            }
+                const int d1 = data[idx + 1];
+                const int d2 = data[idx + 2];
 
-            // ------------------------------------------------------------
-            // Track "SOLO button physically held" bookkeeping (menu only)
-            // (This is what enables "hold SOLO + press CLEAR to clear solos")
-            // ------------------------------------------------------------
-            if (*self->bank && cc == CC_SOLO) {
-                if (value == 127) self->soloButtonHeld = true;
-                if (value == 0)   self->soloButtonHeld = false;
-                // don't continue; we still want the state-button logic below
-            }
+                // ---- Only handle CCs (0xB0) coming from LCXL ----
+                if (type == 0xB0) {
+                    if (!fromLcxl) { idx += 3; continue; }
 
-            // ------------------------------------------------------------
-            // SOLO-hold sub-action:
-            // While BANK held AND SOLO is physically held, pressing CLEAR clears solos
-            // WITHOUT switching to CLEAR state, and prevents exiting SOLO on CC55 release.
-            // ------------------------------------------------------------
-            if (*self->bank && self->soloButtonHeld && cc == CC_CLEAR && value == 127) {
-                for (auto& tr : *self->tracks) {
-                    if (tr.isSoloed()) tr.toggleSolo();
-                }
-                self->soloClearedDuringHold = true;
-                self->exitStateOnRelease = false; // disarm any pending exit
+                    const int cc    = d1;
+                    const int value = d2;
 
-                pkt = MIDIPacketNext(pkt);
-                continue;
-            }
+                    // BANK (CC53) momentary
+                    if (cc == CC_BANK) {
+                        if (self->bank) *self->bank = isPress(value);
 
-            // ------------------------------------------------------------
-            // State buttons (CC54/55/56) while BANK held:
-            // - Press enters that state.
-            // - If already in that state: pressing again ARMS exit-on-release.
-            // - Release exits ONLY if exit was armed.
-            // - Entering another state cancels pending exit.
-            // Special: if solos were cleared during SOLO hold, do NOT exit SOLO on release.
-            // ------------------------------------------------------------
-            if (*self->bank && (cc == CC_MUTE || cc == CC_SOLO || cc == CC_CLEAR)) {
-                const Action pressedAction = actionFromCc(cc);
-
-                if (value == 127) { // press down
-                    if (self->action != pressedAction) {
-                        // switching to another state
-                        self->action = pressedAction;
-
-                        // cancel any pending exit
-                        self->exitStateOnRelease = false;
-
-                        // remember which state button is currently held
-                        self->heldStateCc = cc;
-                        self->heldStateAction = pressedAction;
-
-                        // entering SOLO resets the gate for this hold
-                        if (pressedAction == SOLO) {
+                        if (isRelease(value)) {
+                            self->action = NONE;
+                            self->exitStateOnRelease = false;
+                            self->heldStateCc = -1;
+                            self->heldStateAction = NONE;
                             self->soloClearedDuringHold = false;
+                            self->soloButtonHeld = false;
                         }
 
-                        pkt = MIDIPacketNext(pkt);
+                        idx += 3;
                         continue;
                     }
 
-                    // pressing the SAME state button while already in that state -> arm exit on release
-                    if (!(pressedAction == SOLO && self->soloClearedDuringHold)) {
-                        self->exitStateOnRelease = true;
-                    } else {
-                        self->exitStateOnRelease = false;
+                    const bool inBank = (self->bank && *self->bank);
+
+                    // Velocity levels (CC49/50) - step mode only, press only
+                    if (!inBank && isPress(value)) {
+                        if (cc == CC_SEND_SELECT_1) { self->applyVelLevelToHeld(+1); idx += 3; continue; }
+                        if (cc == CC_SEND_SELECT_2) { self->applyVelLevelToHeld(-1); idx += 3; continue; }
                     }
 
-                    self->heldStateCc = cc;
-                    self->heldStateAction = pressedAction;
+                    // Free buttons (CC51/52) press only
+                    if (isPress(value) && (cc == CC_USER_BTN_1 || cc == CC_USER_BTN_2)) {
+                        self->handleUserButton(cc);
+                        idx += 3;
+                        continue;
+                    }
 
-                    pkt = MIDIPacketNext(pkt);
-                    continue;
-                }
+                    // SOLO physical hold bookkeeping (menu only)
+                    if (inBank && cc == CC_SOLO) {
+                        if (isPress(value))   self->soloButtonHeld = true;
+                        if (isRelease(value)) self->soloButtonHeld = false;
+                    }
 
-                if (value == 0) { // release
-                    // If this is the button we were tracking, decide whether to exit
-                    if (self->heldStateCc == cc) {
-                        if (self->heldStateAction == self->action && self->exitStateOnRelease) {
-                            // exit unless SOLO was "protected" by clearing during hold
-                            if (!(self->action == SOLO && self->soloClearedDuringHold)) {
-                                self->action = NONE;
+                    // While BANK held AND SOLO held, press CLEAR clears solos
+                    if (inBank && self->soloButtonHeld && cc == CC_CLEAR && isPress(value)) {
+                        if (self->tracks) {
+                            for (auto& tr : *self->tracks)
+                                if (tr.isSoloed()) tr.toggleSolo();
+                        }
+                        self->soloClearedDuringHold = true;
+                        self->exitStateOnRelease = false;
+                        idx += 3;
+                        continue;
+                    }
+
+                    // State buttons (CC54/55/56) while BANK held
+                    if (inBank && (cc == CC_MUTE || cc == CC_SOLO || cc == CC_CLEAR)) {
+                        const Action pressedAction = actionFromCc(cc);
+
+                        if (isPress(value)) {
+                            if (self->action != pressedAction) {
+                                self->action = pressedAction;
+                                self->exitStateOnRelease = false;
+                                self->heldStateCc = cc;
+                                self->heldStateAction = pressedAction;
+                                if (pressedAction == SOLO) self->soloClearedDuringHold = false;
+                                idx += 3;
+                                continue;
                             }
+
+                            // press again in same state -> arm exit (unless SOLO protected)
+                            self->exitStateOnRelease = !(pressedAction == SOLO && self->soloClearedDuringHold);
+                            self->heldStateCc = cc;
+                            self->heldStateAction = pressedAction;
+
+                            idx += 3;
+                            continue;
                         }
 
-                        // clear hold bookkeeping
-                        self->exitStateOnRelease = false;
-                        self->heldStateCc = -1;
-                        self->heldStateAction = NONE;
-                    }
-
-                    pkt = MIDIPacketNext(pkt);
-                    continue;
-                }
-            }
-
-            // ------------------------------------------------------------
-            // Pads CC33–48 (stepCCs)
-            // ------------------------------------------------------------
-            auto it = std::find(self->stepCCs.begin(), self->stepCCs.end(), cc);
-            if (it != self->stepCCs.end()) {
-                const int index = (int)std::distance(self->stepCCs.begin(), it); // 0..15
-
-                if (*self->bank) {
-                    // bank mode: act on press only
-                    if (value == 127) {
-                        Sequencer& tr = (*self->tracks)[index];
-                        switch (self->action) {
-                            case CLEAR: tr.clearSteps();  break;
-                            case MUTE:  tr.toggleMute();  break;
-                            case SOLO:  tr.toggleSolo();  break;
-                            case NONE:
-                            default:
-                                *self->selected = index;
-                                break;
+                        if (isRelease(value)) {
+                            if (self->heldStateCc == cc) {
+                                if (self->heldStateAction == self->action && self->exitStateOnRelease) {
+                                    if (!(self->action == SOLO && self->soloClearedDuringHold))
+                                        self->action = NONE;
+                                }
+                                self->exitStateOnRelease = false;
+                                self->heldStateCc = -1;
+                                self->heldStateAction = NONE;
+                            }
+                            idx += 3;
+                            continue;
                         }
                     }
-                } else {
-                    // step mode: instant ON, release OFF only if not edited
-                    Sequencer& seq = (*self->tracks)[*self->selected];
 
-                    if (value == 127) {
-                        self->heldSteps[index] = true;
-                        self->editedWhileHeld[index] = false;
+                    // Pads CC33–48
+                    auto it = std::find(self->stepCCs.begin(), self->stepCCs.end(), cc);
+                    if (it != self->stepCCs.end()) {
+                        const int index = (int)std::distance(self->stepCCs.begin(), it);
 
-                        if (!seq.getStepOn(index)) {
-                            // OFF -> ON immediately
-                            seq.setStepOn(index, true);
-                            if (seq.getVelocity(index) == 0)
-                                seq.setVelocity(index, kVelLevels[0]);
-                            self->pendingOff[index] = false;
+                        if (inBank) {
+                            if (isPress(value) && self->tracks && self->selected) {
+                                Sequencer& tr = (*self->tracks)[index];
+                                switch (self->action) {
+                                    case CLEAR: tr.clearSteps(); break;
+                                    case MUTE:  tr.toggleMute(); break;
+                                    case SOLO:  tr.toggleSolo(); break;
+                                    case NONE:
+                                    default:    *self->selected = index; break;
+                                }
+                            }
                         } else {
-                            // ON -> pending off on release
-                            self->pendingOff[index] = true;
-                        }
-                    }
-                    else if (value == 0) {
-                        self->heldSteps[index] = false;
+                            if (!self->tracks || !self->selected) { idx += 3; continue; }
+                            Sequencer& seq = (*self->tracks)[*self->selected];
 
-                        if (self->pendingOff[index]) {
-                            if (!self->editedWhileHeld[index]) {
-                                seq.setStepOn(index, false);
+                            if (isPress(value)) {
+                                self->heldSteps[index] = true;
+                                self->editedWhileHeld[index] = false;
+
+                                if (!seq.getStepOn(index)) {
+                                    seq.setStepOn(index, true);
+                                    if (seq.getVelocity(index) == 0)
+                                        seq.setVelocity(index, kVelLevels[0]);
+                                    self->pendingOff[index] = false;
+                                } else {
+                                    self->pendingOff[index] = true;
+                                }
+                            } else if (isRelease(value)) {
+                                self->heldSteps[index] = false;
+
+                                if (self->pendingOff[index]) {
+                                    if (!self->editedWhileHeld[index])
+                                        seq.setStepOn(index, false);
+                                    self->pendingOff[index] = false;
+                                }
+                                self->editedWhileHeld[index] = false;
                             }
-                            self->pendingOff[index] = false;
                         }
 
-                        self->editedWhileHeld[index] = false;
+                        idx += 3;
+                        continue;
                     }
+
+                    // unhandled CC
+                    idx += 3;
+                    continue;
                 }
 
-                pkt = MIDIPacketNext(pkt);
+                // skip unhandled note/voice message
+                idx += 3;
                 continue;
             }
 
-            // If we didn't handle the CC, just fall through.
+            // Unknown: skip 1 byte
+            idx += 1;
         }
 
         pkt = MIDIPacketNext(pkt);
     }
 }
 
-
-
-
-
-
+// ------------------------------------------------------------
+// Stubs / velocity helpers
+// ------------------------------------------------------------
 void MidiInterface::handleUserButton(int cc) {
-    // Intentionally unassigned for now.
-    // Put future behaviors here (pattern up/down, page left/right, etc.)
     (void)cc;
 }
 
-void MidiInterface::applyVelocityDeltaToHeld(int delta) {
-    if (!tracks || !selected) return;
-
-    Sequencer& seq = (*tracks)[*selected];
-
-    for (int s = 0; s < 16; ++s) {
-        if (heldSteps[s]) {
-            seq.changeVelocity(s, delta);
-        }
-    }
-}
-
 int MidiInterface::clampVelLevel(int currentVel, int dir) const {
-    // Map currentVel to an index 0..2, then move by dir and clamp (no wrap)
     int idx = 0;
-
     if (currentVel <= 0) idx = 0;
     else if (currentVel <= kVelLevels[0]) idx = 0;
     else if (currentVel <= kVelLevels[1]) idx = 1;
     else idx = 2;
 
-    idx += dir;
-    if (idx < 0) idx = 0;
-    if (idx > 2) idx = 2;
-
+    idx = std::clamp(idx + dir, 0, 2);
     return kVelLevels[idx];
 }
 
 void MidiInterface::applyVelLevelToHeld(int dir) {
     if (!tracks || !selected) return;
-
     Sequencer& seq = (*tracks)[*selected];
 
     for (int s = 0; s < 16; ++s) {
         if (!heldSteps[s]) continue;
+
         editedWhileHeld[s] = true;
 
-        // If step is off, turn it on at LOW so you get immediate LED feedback
         if (!seq.getStepOn(s)) {
             seq.setStepOn(s, true);
             seq.setVelocity(s, kVelLevels[0]);
             continue;
         }
 
-        int curVel = seq.getVelocity(s);
-        int next = clampVelLevel(curVel, dir);
+        const int cur  = seq.getVelocity(s);
+        const int next = clampVelLevel(cur, dir);
         seq.setVelocity(s, next);
     }
 }
-
-
