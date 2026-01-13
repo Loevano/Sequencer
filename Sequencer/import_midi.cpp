@@ -18,7 +18,6 @@ static constexpr int CC_SEND_SELECT_1 = 49;
 static constexpr int CC_SEND_SELECT_2 = 50;
 static constexpr int CC_USER_BTN_1    = 51; // labeled "Track Select" on hardware
 static constexpr int CC_USER_BTN_2    = 52; // labeled "Track Select" on hardware
-static constexpr int CC_USER_CH_BASE  = 80; // user channel select (program LCXL)
 
 static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 
@@ -321,11 +320,6 @@ void MidiInterface::updateMenuLeds() {
     setLed(CC_MUTE,  (action == MUTE)  ? "amber:full" : "off");
     setLed(CC_SOLO,  (action == SOLO)  ? "amber:full" : "off");
     setLed(CC_CLEAR, (action == CLEAR) ? "amber:full" : "off");
-
-    for (int i = 0; i < kUserChannels; ++i) {
-        const int cc = CC_USER_CH_BASE + i;
-        setLed(cc, (i == activeUser) ? "green:full" : "off");
-    }
 }
 
 void MidiInterface::updateStepLeds(int baseCC) {
@@ -335,6 +329,12 @@ void MidiInterface::updateStepLeds(int baseCC) {
     const auto& tracks = (*banks)[activeUser];
     const int selected = selectedByUser[activeUser];
     if (selected < 0 || selected >= (int)tracks.size()) return;
+
+    if (channelSelectHeld) {
+        for (int i = 0; i < (int)tracks.size(); ++i)
+            setLed(baseCC + i, (i == activeUser) ? "green:full" : "off");
+        return;
+    }
 
     const Sequencer& seq = tracks[selected];
     const int steps = seq.getNumSteps();
@@ -497,15 +497,6 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                         continue;
                     }
 
-                    // User channel select (CC80..87) press only
-                    if (cc >= CC_USER_CH_BASE && cc < CC_USER_CH_BASE + kUserChannels && isPress(value)) {
-                        const int u = cc - CC_USER_CH_BASE;
-                        if (self->banks && u < (int)self->banks->size())
-                            self->activeUser = u;
-                        idx += 3;
-                        continue;
-                    }
-
                     // BANK (CC53) momentary
                     if (cc == CC_BANK) {
                         if (self->bank) *self->bank = isPress(value);
@@ -524,6 +515,13 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     }
 
                     const bool inBank = (self->bank && *self->bank);
+
+                    // Channel select modifier (CC56) in step mode only
+                    if (!inBank && cc == CC_CLEAR) {
+                        self->channelSelectHeld = isPress(value);
+                        idx += 3;
+                        continue;
+                    }
 
                     // Velocity levels (CC49/50) - step mode only, press only
                     if (!inBank && isPress(value)) {
@@ -614,6 +612,9 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                     default:    self->selectedByUser[self->activeUser] = index; break;
                                 }
                             }
+                        } else if (self->channelSelectHeld) {
+                            if (isPress(value) && self->banks && index < (int)self->banks->size())
+                                self->activeUser = index;
                         } else {
                             if (!self->banks || self->activeUser >= (int)self->banks->size()) { idx += 3; continue; }
                             auto& tracks = (*self->banks)[self->activeUser];

@@ -10,7 +10,7 @@
 int main() {
     constexpr int NUM_TRACKS = 16;
     constexpr int STEPS = 16;
-    constexpr int USER_CHANNELS = 8;
+    constexpr int USER_CHANNELS = 16;
 
     std::vector<std::vector<Sequencer>> banks;
     banks.resize(USER_CHANNELS);

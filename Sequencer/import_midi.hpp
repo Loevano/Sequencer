@@ -34,7 +34,7 @@ public:
     bool isUsingMidiClock() const { return useMidiClock; }
 
 private:
-    static constexpr int kUserChannels = 8;
+    static constexpr int kUserChannels = 16;
 
     // -------- CoreMIDI --------
     MIDIPortRef     inputPort  = 0;
@@ -66,6 +66,7 @@ private:
     int*  playStep = nullptr; // global playhead step
     int   activeUser = 0;
     int   selectedByUser[kUserChannels] = { 0 };
+    bool  channelSelectHeld = false;
 
     // -------- Track velocity scaling (pots CC1..16) --------
     int trackVelScale[kUserChannels][16] = {}; // 0..127 per track
