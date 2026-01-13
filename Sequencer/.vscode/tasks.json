@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "/bin/bash",
+      "args": [
+        "-lc",
+        "set -euo pipefail; cd \"${workspaceFolder}\"; OUT=\"${workspaceFolderBasename}\"; if ls src/*.cpp >/dev/null 2>&1; then SRC=(src/*.cpp); else SRC=(*.cpp); fi; /usr/bin/clang++ -std=c++20 -fcolor-diagnostics -fansi-escape-codes -g \"${SRC[@]}\" -o \"$OUT\" -framework CoreMIDI -framework CoreFoundation"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$gcc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}
