@@ -17,8 +17,7 @@ enum Action {
 
 class MidiInterface {
 public:
-    MidiInterface(std::vector<Sequencer>* tracks,
-                  int* selectedTrack,
+    MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                   bool* bankMode,
                   int* globalStep);
 
@@ -35,6 +34,8 @@ public:
     bool isUsingMidiClock() const { return useMidiClock; }
 
 private:
+    static constexpr int kUserChannels = 8;
+
     // -------- CoreMIDI --------
     MIDIPortRef     inputPort  = 0;
     MIDIPortRef     outputPort = 0;
@@ -50,26 +51,24 @@ private:
 
     void sendMsg3(UInt8 status, UInt8 data1, UInt8 data2);
     void sendCC(int cc, int value);
-    void sendNoteOn(int note, int vel);
-    void sendNoteOff(int note);
+    void sendNoteOn(int note, int vel, int channel);
+    void sendNoteOff(int note, int channel);
     void allNotesOff();
 
     int trackToNote(int trackIndex) const { return baseNote + trackIndex; }
 
-    bool anyTrackSoloed() const;
-    bool trackAudible(const Sequencer& tr) const;
+    bool anyTrackSoloed(const std::vector<Sequencer>& tracks) const;
+    bool trackAudible(const Sequencer& tr, const std::vector<Sequencer>& tracks) const;
 
     // -------- External state --------
-    std::vector<Sequencer>* tracks = nullptr;
-    int*  selected = nullptr;
+    std::vector<std::vector<Sequencer>>* banks = nullptr;
     bool* bank = nullptr;
     int*  playStep = nullptr; // global playhead step
+    int   activeUser = 0;
+    int   selectedByUser[kUserChannels] = { 0 };
 
     // -------- Track velocity scaling (pots CC1..16) --------
-    int trackVelScale[16] = {
-        127,127,127,127,127,127,127,127,
-        127,127,127,127,127,127,127,127
-    }; // 0..127 per track
+    int trackVelScale[kUserChannels][16] = {}; // 0..127 per track
 
     // -------- UI state --------
     Action action = NONE;

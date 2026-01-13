@@ -18,6 +18,7 @@ static constexpr int CC_SEND_SELECT_1 = 49;
 static constexpr int CC_SEND_SELECT_2 = 50;
 static constexpr int CC_USER_BTN_1    = 51; // labeled "Track Select" on hardware
 static constexpr int CC_USER_BTN_2    = 52; // labeled "Track Select" on hardware
+static constexpr int CC_USER_CH_BASE  = 80; // user channel select (program LCXL)
 
 static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 
@@ -78,12 +79,15 @@ static Action actionFromCc(int cc) {
 // ------------------------------------------------------------
 // Ctor / dtor / init
 // ------------------------------------------------------------
-MidiInterface::MidiInterface(std::vector<Sequencer>* t,
-                             int* s,
+MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                              bool* b,
                              int* globalStep)
-: tracks(t), selected(s), bank(b), playStep(globalStep)
-{}
+: banks(allBanks), bank(b), playStep(globalStep)
+{
+    for (int u = 0; u < kUserChannels; ++u)
+        for (int t = 0; t < 16; ++t)
+            trackVelScale[u][t] = 127;
+}
 
 MidiInterface::~MidiInterface() {
     if (inputPort)     MIDIPortDispose(inputPort);
@@ -181,36 +185,40 @@ void MidiInterface::sendCC(int cc, int value) {
     sendMsg3((UInt8)(0xB0 | MIDI_CH), (UInt8)cc, (UInt8)value);
 }
 
-void MidiInterface::sendNoteOn(int note, int vel) {
+void MidiInterface::sendNoteOn(int note, int vel, int channel) {
     note = std::clamp(note, 0, 127);
     vel  = std::clamp(vel, 1, 127);
-    sendMsg3((UInt8)(0x90 | MIDI_CH), (UInt8)note, (UInt8)vel);
+    channel = std::clamp(channel, 0, 15);
+    sendMsg3((UInt8)(0x90 | channel), (UInt8)note, (UInt8)vel);
 }
 
-void MidiInterface::sendNoteOff(int note) {
+void MidiInterface::sendNoteOff(int note, int channel) {
     note = std::clamp(note, 0, 127);
-    sendMsg3((UInt8)(0x80 | MIDI_CH), (UInt8)note, 0);
+    channel = std::clamp(channel, 0, 15);
+    sendMsg3((UInt8)(0x80 | channel), (UInt8)note, 0);
 }
 
 void MidiInterface::allNotesOff() {
-    if (!tracks) return;
-    for (int t = 0; t < (int)tracks->size(); ++t)
-        sendNoteOff(trackToNote(t));
+    if (!banks) return;
+    for (int u = 0; u < (int)banks->size(); ++u) {
+        const auto& tracks = (*banks)[u];
+        for (int t = 0; t < (int)tracks.size(); ++t)
+            sendNoteOff(trackToNote(t), u);
+    }
     sendCC(123, 0); // CC123 All Notes Off (safety net)
 }
 
 // ------------------------------------------------------------
 // Audio/mixer logic
 // ------------------------------------------------------------
-bool MidiInterface::anyTrackSoloed() const {
-    if (!tracks) return false;
-    for (const auto& tr : *tracks)
+bool MidiInterface::anyTrackSoloed(const std::vector<Sequencer>& tracks) const {
+    for (const auto& tr : tracks)
         if (tr.isSoloed()) return true;
     return false;
 }
 
-bool MidiInterface::trackAudible(const Sequencer& tr) const {
-    const bool anySolo = anyTrackSoloed();
+bool MidiInterface::trackAudible(const Sequencer& tr, const std::vector<Sequencer>& tracks) const {
+    const bool anySolo = anyTrackSoloed(tracks);
     if (tr.isMuted()) return false;
     if (anySolo && !tr.isSoloed()) return false;
     return true;
@@ -220,31 +228,35 @@ bool MidiInterface::trackAudible(const Sequencer& tr) const {
 // Tick (called from MIDI clock or internal clock)
 // ------------------------------------------------------------
 void MidiInterface::tickStep(int step) {
-    if (!tracks) return;
-    const int nTracks = (int)tracks->size();
-    if (nTracks <= 0) return;
+    if (!banks || banks->empty()) return;
 
     // Note OFF previous step (1-step gate)
     if (lastTickStep >= 0) {
-        for (int t = 0; t < nTracks; ++t) {
-            const Sequencer& tr = (*tracks)[t];
-            if (!trackAudible(tr)) continue;
-            if (tr.getStepOn(lastTickStep)) sendNoteOff(trackToNote(t));
+        for (int u = 0; u < (int)banks->size(); ++u) {
+            const auto& tracks = (*banks)[u];
+            for (int t = 0; t < (int)tracks.size(); ++t) {
+                const Sequencer& tr = tracks[t];
+                if (!trackAudible(tr, tracks)) continue;
+                if (tr.getStepOn(lastTickStep)) sendNoteOff(trackToNote(t), u);
+            }
         }
     }
 
     // Note ON current step
-    for (int t = 0; t < nTracks; ++t) {
-        const Sequencer& tr = (*tracks)[t];
-        if (!trackAudible(tr)) continue;
+    for (int u = 0; u < (int)banks->size(); ++u) {
+        const auto& tracks = (*banks)[u];
+        for (int t = 0; t < (int)tracks.size(); ++t) {
+            const Sequencer& tr = tracks[t];
+            if (!trackAudible(tr, tracks)) continue;
 
-        if (tr.getStepOn(step)) {
-            int vel = tr.getVelocity(step);
+            if (tr.getStepOn(step)) {
+                int vel = tr.getVelocity(step);
 
-            // apply per-track pot scale (CC1..16)
-            if (t < 16) vel = (vel * trackVelScale[t]) / 127;
+                // apply per-track pot scale (CC1..16)
+                if (t < 16) vel = (vel * trackVelScale[u][t]) / 127;
 
-            if (vel > 0) sendNoteOn(trackToNote(t), vel);
+                if (vel > 0) sendNoteOn(trackToNote(t), vel, u);
+            }
         }
     }
 
@@ -309,12 +321,22 @@ void MidiInterface::updateMenuLeds() {
     setLed(CC_MUTE,  (action == MUTE)  ? "amber:full" : "off");
     setLed(CC_SOLO,  (action == SOLO)  ? "amber:full" : "off");
     setLed(CC_CLEAR, (action == CLEAR) ? "amber:full" : "off");
+
+    for (int i = 0; i < kUserChannels; ++i) {
+        const int cc = CC_USER_CH_BASE + i;
+        setLed(cc, (i == activeUser) ? "green:full" : "off");
+    }
 }
 
 void MidiInterface::updateStepLeds(int baseCC) {
-    if (!tracks || !selected || !playStep) return;
+    if (!banks || !playStep) return;
+    if (activeUser < 0 || activeUser >= (int)banks->size()) return;
 
-    const Sequencer& seq = (*tracks)[*selected];
+    const auto& tracks = (*banks)[activeUser];
+    const int selected = selectedByUser[activeUser];
+    if (selected < 0 || selected >= (int)tracks.size()) return;
+
+    const Sequencer& seq = tracks[selected];
     const int steps = seq.getNumSteps();
     if (steps <= 0) return;
 
@@ -332,7 +354,11 @@ void MidiInterface::updateStepLeds(int baseCC) {
 }
 
 void MidiInterface::updateBankLeds() {
-    if (!tracks || !selected) return;
+    if (!banks) return;
+    if (activeUser < 0 || activeUser >= (int)banks->size()) return;
+
+    const auto& tracks = (*banks)[activeUser];
+    const int selected = selectedByUser[activeUser];
 
     auto now = std::chrono::steady_clock::now();
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastBlink).count() >= blinkIntervalMs) {
@@ -340,11 +366,11 @@ void MidiInterface::updateBankLeds() {
         lastBlink = now;
     }
 
-    for (int i = 0; i < (int)tracks->size(); ++i) {
-        const Sequencer& t = (*tracks)[i];
+    for (int i = 0; i < (int)tracks.size(); ++i) {
+        const Sequencer& t = tracks[i];
 
         if (action == NONE) {
-            if (i == *selected) {
+            if (i == selected) {
                 if (t.hasSteps()) setLed(stepCCs[i], blinkOn ? "green:full" : "amber:mid");
                 else              setLed(stepCCs[i], blinkOn ? "green:full" : "off");
             } else if (t.hasSteps()) setLed(stepCCs[i], "red:mid");
@@ -420,10 +446,15 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                             break;
 
                         case 0xF8: // Clock pulse
-                            if (self->transportRunning && self->playStep && self->tracks && self->selected) {
+                            if (self->transportRunning && self->playStep && self->banks) {
                                 self->midiClockPulses++;
                                 if (self->midiClockPulses % self->kPulsesPer16th == 0) {
-                                    const int steps = (*self->tracks)[*self->selected].getNumSteps();
+                                    const int u = self->activeUser;
+                                    if (u < 0 || u >= (int)self->banks->size()) { idx += 1; continue; }
+                                    const auto& tracks = (*self->banks)[u];
+                                    const int sel = self->selectedByUser[u];
+                                    if (sel < 0 || sel >= (int)tracks.size()) { idx += 1; continue; }
+                                    const int steps = tracks[sel].getNumSteps();
                                     if (steps > 0) {
                                         const int next = (*self->playStep + 1) % steps;
                                         *self->playStep = next;
