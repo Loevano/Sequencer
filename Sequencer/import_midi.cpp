@@ -490,9 +490,18 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     // Pots CC1..16: per-track velocity scale
                     if (cc >= 1 && cc <= 16) {
                         const int t = cc - 1;
-                        if (self->tracks && t < (int)self->tracks->size()) {
-                            self->trackVelScale[t] = std::clamp(value, 0, 127);
+                        if (self->banks && self->activeUser < (int)self->banks->size()) {
+                            self->trackVelScale[self->activeUser][t] = std::clamp(value, 0, 127);
                         }
+                        idx += 3;
+                        continue;
+                    }
+
+                    // User channel select (CC80..87) press only
+                    if (cc >= CC_USER_CH_BASE && cc < CC_USER_CH_BASE + kUserChannels && isPress(value)) {
+                        const int u = cc - CC_USER_CH_BASE;
+                        if (self->banks && u < (int)self->banks->size())
+                            self->activeUser = u;
                         idx += 3;
                         continue;
                     }
@@ -537,8 +546,9 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
                     // While BANK held AND SOLO held, press CLEAR clears solos
                     if (inBank && self->soloButtonHeld && cc == CC_CLEAR && isPress(value)) {
-                        if (self->tracks) {
-                            for (auto& tr : *self->tracks)
+                        if (self->banks && self->activeUser < (int)self->banks->size()) {
+                            auto& tracks = (*self->banks)[self->activeUser];
+                            for (auto& tr : tracks)
                                 if (tr.isSoloed()) tr.toggleSolo();
                         }
                         self->soloClearedDuringHold = true;
@@ -592,19 +602,24 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                         const int index = (int)std::distance(self->stepCCs.begin(), it);
 
                         if (inBank) {
-                            if (isPress(value) && self->tracks && self->selected) {
-                                Sequencer& tr = (*self->tracks)[index];
+                            if (isPress(value) && self->banks && self->activeUser < (int)self->banks->size()) {
+                                auto& tracks = (*self->banks)[self->activeUser];
+                                if (index >= (int)tracks.size()) { idx += 3; continue; }
+                                Sequencer& tr = tracks[index];
                                 switch (self->action) {
                                     case CLEAR: tr.clearSteps(); break;
                                     case MUTE:  tr.toggleMute(); break;
                                     case SOLO:  tr.toggleSolo(); break;
                                     case NONE:
-                                    default:    *self->selected = index; break;
+                                    default:    self->selectedByUser[self->activeUser] = index; break;
                                 }
                             }
                         } else {
-                            if (!self->tracks || !self->selected) { idx += 3; continue; }
-                            Sequencer& seq = (*self->tracks)[*self->selected];
+                            if (!self->banks || self->activeUser >= (int)self->banks->size()) { idx += 3; continue; }
+                            auto& tracks = (*self->banks)[self->activeUser];
+                            const int sel = self->selectedByUser[self->activeUser];
+                            if (sel < 0 || sel >= (int)tracks.size()) { idx += 3; continue; }
+                            Sequencer& seq = tracks[sel];
 
                             if (isPress(value)) {
                                 self->heldSteps[index] = true;
@@ -672,8 +687,11 @@ int MidiInterface::clampVelLevel(int currentVel, int dir) const {
 }
 
 void MidiInterface::applyVelLevelToHeld(int dir) {
-    if (!tracks || !selected) return;
-    Sequencer& seq = (*tracks)[*selected];
+    if (!banks || activeUser >= (int)banks->size()) return;
+    auto& tracks = (*banks)[activeUser];
+    const int sel = selectedByUser[activeUser];
+    if (sel < 0 || sel >= (int)tracks.size()) return;
+    Sequencer& seq = tracks[sel];
 
     for (int s = 0; s < 16; ++s) {
         if (!heldSteps[s]) continue;

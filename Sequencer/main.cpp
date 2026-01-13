@@ -10,16 +10,19 @@
 int main() {
     constexpr int NUM_TRACKS = 16;
     constexpr int STEPS = 16;
+    constexpr int USER_CHANNELS = 8;
 
-    std::vector<Sequencer> tracks;
-    tracks.reserve(NUM_TRACKS);
-    for (int i = 0; i < NUM_TRACKS; ++i) tracks.emplace_back(STEPS);
+    std::vector<std::vector<Sequencer>> banks;
+    banks.resize(USER_CHANNELS);
+    for (auto& tracks : banks) {
+        tracks.reserve(NUM_TRACKS);
+        for (int i = 0; i < NUM_TRACKS; ++i) tracks.emplace_back(STEPS);
+    }
 
-    int selectedTrack = 0;
     bool bankMode = false;
     int globalStep = 0;
 
-    MidiInterface midi(&tracks, &selectedTrack, &bankMode, &globalStep);
+    MidiInterface midi(&banks, &bankMode, &globalStep);
     if (!midi.initialize()) return 1;
 
     std::atomic<bool> running{true};
