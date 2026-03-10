@@ -16,13 +16,12 @@ static constexpr int CC_CLEAR = 56;
 
 static constexpr int CC_SEND_SELECT_1 = 49;
 static constexpr int CC_SEND_SELECT_2 = 50;
-static constexpr int CC_USER_BTN_1    = 51; // labeled "Track Select" on hardware
-static constexpr int CC_USER_BTN_2    = 52; // labeled "Track Select" on hardware
-
 static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 
 static constexpr intptr_t SRC_LCXL  = 1;
 static constexpr intptr_t SRC_CLOCK = 2;
+
+static constexpr bool kLogMidiDevices = false;
 
 // ------------------------------------------------------------
 // Helpers (device discovery / debug)
@@ -115,8 +114,10 @@ bool MidiInterface::initialize() {
     r = MIDIDestinationCreate(client, CFSTR("Sequencer In"), midiCallback, this, &virtualDest);
     if (r != noErr) { std::cerr << "MIDIDestinationCreate failed\n"; return false; }
 
-    printMidiSourcesOnce();
-    printMidiDestinationsOnce();
+    if (kLogMidiDevices) {
+        printMidiSourcesOnce();
+        printMidiDestinationsOnce();
+    }
 
     bool connectedLcxl  = false;
     bool connectedClock = false;
@@ -128,7 +129,8 @@ bool MidiInterface::initialize() {
         if (endpointNameContains(src, "Launch Control XL")) {
             if (MIDIPortConnectSource(inputPort, src, (void*)SRC_LCXL) == noErr) {
                 connectedLcxl = true;
-                std::cout << "Connected to Launch Control XL (Source[" << i << "])\n";
+                if (kLogMidiDevices)
+                    std::cout << "Connected to Launch Control XL (Source[" << i << "])\n";
             }
         }
 
@@ -136,7 +138,8 @@ bool MidiInterface::initialize() {
         if (endpointNameContains(src, "MIDI Port")) {
             if (MIDIPortConnectSource(inputPort, src, (void*)SRC_CLOCK) == noErr) {
                 connectedClock = true;
-                std::cout << "Connected to MIDI Port (Source[" << i << "])\n";
+                if (kLogMidiDevices)
+                    std::cout << "Connected to MIDI Port (Source[" << i << "])\n";
             }
         }
     }
@@ -152,7 +155,8 @@ bool MidiInterface::initialize() {
         }
     }
 
-    std::cout << "Virtual ports created: Sequencer In (from Ableton), Sequencer Out (to Ableton)\n";
+    if (kLogMidiDevices)
+        std::cout << "Virtual ports created: Sequencer In (from Ableton), Sequencer Out (to Ableton)\n";
     return true;
 }
 
@@ -529,13 +533,6 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                         if (cc == CC_SEND_SELECT_2) { self->applyVelLevelToHeld(-1); idx += 3; continue; }
                     }
 
-                    // Free buttons (CC51/52) press only
-                    if (isPress(value) && (cc == CC_USER_BTN_1 || cc == CC_USER_BTN_2)) {
-                        self->handleUserButton(cc);
-                        idx += 3;
-                        continue;
-                    }
-
                     // SOLO physical hold bookkeeping (menu only)
                     if (inBank && cc == CC_SOLO) {
                         if (isPress(value))   self->soloButtonHeld = true;
@@ -670,12 +667,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
 
 // ------------------------------------------------------------
-// Stubs / velocity helpers
+// Velocity helpers
 // ------------------------------------------------------------
-void MidiInterface::handleUserButton(int cc) {
-    (void)cc;
-}
-
 int MidiInterface::clampVelLevel(int currentVel, int dir) const {
     int idx = 0;
     if (currentVel <= 0) idx = 0;

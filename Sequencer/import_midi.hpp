@@ -88,8 +88,6 @@ private:
     int  lcxlLedValue(std::string_view spec) const;
     void setLed(int cc, std::string_view spec);
 
-    void handleUserButton(int cc);
-
     // Held step selection (pads 33–48) for velocity editing
     bool heldSteps[16] = { false };
 
