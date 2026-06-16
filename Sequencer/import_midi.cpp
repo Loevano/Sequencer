@@ -160,6 +160,8 @@ bool MidiInterface::initialize() {
 
     if (kLogMidiDevices)
         std::cout << "Virtual ports created: Sequencer In (from Ableton), Sequencer Out (to Ableton)\n";
+
+    clearRotaryLeds();
     return true;
 }
 
@@ -184,6 +186,23 @@ void MidiInterface::sendMsg3(UInt8 status, UInt8 data1, UInt8 data2) {
         for (ItemCount i = 0; i < nDest; ++i)
             MIDISend(outputPort, MIDIGetDestination(i), &packetList);
     }
+}
+
+void MidiInterface::sendSysEx(const std::vector<UInt8>& data) {
+    if (!outputPort || data.empty()) return;
+
+    MIDIPacketList packetList;
+    MIDIPacket* packet = MIDIPacketListInit(&packetList);
+    MIDIPacketListAdd(&packetList,
+                      sizeof(packetList),
+                      packet,
+                      0,
+                      (UInt16)data.size(),
+                      data.data());
+
+    const ItemCount nDest = MIDIGetNumberOfDestinations();
+    for (ItemCount i = 0; i < nDest; ++i)
+        MIDISend(outputPort, MIDIGetDestination(i), &packetList);
 }
 
 void MidiInterface::sendCC(int cc, int value) {
@@ -211,6 +230,7 @@ void MidiInterface::allNotesOff() {
         for (int t = 0; t < (int)tracks.size(); ++t)
             sendNoteOff(trackToNote(t), u);
     }
+    clearRotaryLeds();
     sendCC(123, 0); // CC123 All Notes Off (safety net)
 }
 
@@ -242,8 +262,11 @@ void MidiInterface::tickStep(int step) {
             const auto& tracks = (*banks)[u];
             for (int t = 0; t < (int)tracks.size(); ++t) {
                 const Sequencer& tr = tracks[t];
-                if (!trackAudible(tr, tracks)) continue;
-                if (tr.getStepOn(lastTickStep)) sendNoteOff(trackToNote(t), u);
+                const bool wasOn = (u < kUserChannels && t < 16 && trackNoteOn[u][t]);
+                if (tr.getStepOn(lastTickStep) || wasOn) {
+                    sendNoteOff(trackToNote(t), u);
+                    if (u < kUserChannels && t < 16) trackNoteOn[u][t] = false;
+                }
             }
         }
     }
@@ -261,7 +284,14 @@ void MidiInterface::tickStep(int step) {
                 // apply per-track pot scale (CC1..16)
                 if (t < 16) vel = (vel * trackVelScale[u][t]) / 127;
 
-                if (vel > 0) sendNoteOn(trackToNote(t), vel, u);
+                if (vel > 0) {
+                    sendNoteOn(trackToNote(t), vel, u);
+                    if (u < kUserChannels && t < 16) {
+                        trackNoteOn[u][t] = true;
+                        rotaryLedUntil[u][t] = std::chrono::steady_clock::now() +
+                                               std::chrono::milliseconds(kRotaryPulseMs);
+                    }
+                }
             }
         }
     }
@@ -318,6 +348,36 @@ void MidiInterface::setLed(int cc, std::string_view spec) {
     sendCC(cc, lcxlLedValue(spec));
 }
 
+void MidiInterface::setRotaryLed(int index, std::string_view spec) {
+    if (index < 0 || index >= 24) return;
+
+    const UInt8 value = (UInt8)lcxlLedValue(spec);
+    for (int tmpl = 0; tmpl < 16; ++tmpl) {
+        std::vector<UInt8> data = {
+            0xF0, 0x00, 0x20, 0x29, 0x02, 0x11, 0x78,
+            (UInt8)tmpl,
+            (UInt8)index,
+            value,
+            0xF7
+        };
+        sendSysEx(data);
+    }
+}
+
+void MidiInterface::clearRotaryLeds() {
+    for (int u = 0; u < kUserChannels; ++u) {
+        for (int t = 0; t < 16; ++t) {
+            trackNoteOn[u][t] = false;
+            rotaryLedUntil[u][t] = {};
+        }
+    }
+
+    for (int t = 0; t < 24; ++t) {
+        if (t < 16) rotaryLedShown[t] = false;
+        setRotaryLed(t, "off");
+    }
+}
+
 // ------------------------------------------------------------
 // LED Updates
 // ------------------------------------------------------------
@@ -329,17 +389,32 @@ void MidiInterface::updateMenuLeds() {
     setLed(CC_CLEAR, (action == CLEAR) ? "amber:full" : "off");
 }
 
+void MidiInterface::updateRotaryLeds() {
+    if (activeUser < 0 || activeUser >= kUserChannels) return;
+
+    const auto now = std::chrono::steady_clock::now();
+    for (int t = 0; t < 16; ++t) {
+        const bool lit = now < rotaryLedUntil[activeUser][t];
+        if (lit == rotaryLedShown[t]) continue;
+
+        rotaryLedShown[t] = lit;
+        setRotaryLed(t, lit ? "amber:full" : "off");
+    }
+}
+
 void MidiInterface::updateStepLeds(int baseCC) {
     if (!banks || !playStep) return;
     if (activeUser < 0 || activeUser >= (int)banks->size()) return;
+    (void)baseCC;
 
     const auto& tracks = (*banks)[activeUser];
     const int selected = selectedByUser[activeUser];
     if (selected < 0 || selected >= (int)tracks.size()) return;
 
     if (channelSelectHeld) {
-        for (int i = 0; i < (int)tracks.size(); ++i)
-            setLed(baseCC + i, (i == activeUser) ? "green:full" : "off");
+        const int count = std::min((int)tracks.size(), (int)stepCCs.size());
+        for (int i = 0; i < count; ++i)
+            setLed(stepCCs[i], (i == activeUser) ? "green:full" : "off");
         return;
     }
 
@@ -349,14 +424,15 @@ void MidiInterface::updateStepLeds(int baseCC) {
 
     const int cur = (*playStep) % steps;
 
-    for (int i = 0; i < steps; ++i) {
-        if (i == cur) { setLed(baseCC + i, "red:full"); continue; }
+    const int count = std::min(steps, (int)stepCCs.size());
+    for (int i = 0; i < count; ++i) {
+        if (i == cur) { setLed(stepCCs[i], "red:full"); continue; }
 
         const int v = seq.getVelocity(i);
-        if (v == 0) setLed(baseCC + i, "off");
-        else if (v <= kVelLevels[0]) setLed(baseCC + i, "amber:low");
-        else if (v <= kVelLevels[1]) setLed(baseCC + i, "amber:mid");
-        else setLed(baseCC + i, "amber:full");
+        if (v == 0) setLed(stepCCs[i], "off");
+        else if (v <= kVelLevels[0]) setLed(stepCCs[i], "amber:low");
+        else if (v <= kVelLevels[1]) setLed(stepCCs[i], "amber:mid");
+        else setLed(stepCCs[i], "amber:full");
     }
 }
 
@@ -450,6 +526,9 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
                         case 0xFC: // Stop
                             self->transportRunning = false;
+                            self->midiClockPulses = 0;
+                            if (self->playStep) *self->playStep = 0;
+                            self->lastTickStep = -1;
                             self->allNotesOff();
                             break;
 
@@ -531,10 +610,10 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                         continue;
                     }
 
-                    // Velocity levels (CC49/50) - step mode only, press only
+                    // Default velocity levels (CC49/50) - step mode only, press only
                     if (!inBank && isPress(value)) {
-                        if (cc == CC_SEND_SELECT_1) { self->applyVelLevelToHeld(+1); idx += 3; continue; }
-                        if (cc == CC_SEND_SELECT_2) { self->applyVelLevelToHeld(-1); idx += 3; continue; }
+                        if (cc == CC_SEND_SELECT_1) { self->adjustDefaultVelLevel(+1); idx += 3; continue; }
+                        if (cc == CC_SEND_SELECT_2) { self->adjustDefaultVelLevel(-1); idx += 3; continue; }
                     }
 
                     // SOLO physical hold bookkeeping (menu only)
@@ -624,26 +703,18 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                             Sequencer& seq = tracks[sel];
 
                             if (isPress(value)) {
-                                self->heldSteps[index] = true;
-                                self->editedWhileHeld[index] = false;
-
                                 if (!seq.getStepOn(index)) {
                                     seq.setStepOn(index, true);
-                                    if (seq.getVelocity(index) == 0)
-                                        seq.setVelocity(index, kVelLevels[0]);
+                                    seq.setVelocity(index, self->defaultVelocity());
                                     self->pendingOff[index] = false;
                                 } else {
                                     self->pendingOff[index] = true;
                                 }
                             } else if (isRelease(value)) {
-                                self->heldSteps[index] = false;
-
                                 if (self->pendingOff[index]) {
-                                    if (!self->editedWhileHeld[index])
-                                        seq.setStepOn(index, false);
+                                    seq.setStepOn(index, false);
                                     self->pendingOff[index] = false;
                                 }
-                                self->editedWhileHeld[index] = false;
                             }
                         }
 
@@ -673,37 +744,6 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 // ------------------------------------------------------------
 // Velocity helpers
 // ------------------------------------------------------------
-int MidiInterface::clampVelLevel(int currentVel, int dir) const {
-    int idx = 0;
-    if (currentVel <= 0) idx = 0;
-    else if (currentVel <= kVelLevels[0]) idx = 0;
-    else if (currentVel <= kVelLevels[1]) idx = 1;
-    else idx = 2;
-
-    idx = std::clamp(idx + dir, 0, 2);
-    return kVelLevels[idx];
-}
-
-void MidiInterface::applyVelLevelToHeld(int dir) {
-    if (!banks || activeUser >= (int)banks->size()) return;
-    auto& tracks = (*banks)[activeUser];
-    const int sel = selectedByUser[activeUser];
-    if (sel < 0 || sel >= (int)tracks.size()) return;
-    Sequencer& seq = tracks[sel];
-
-    for (int s = 0; s < 16; ++s) {
-        if (!heldSteps[s]) continue;
-
-        editedWhileHeld[s] = true;
-
-        if (!seq.getStepOn(s)) {
-            seq.setStepOn(s, true);
-            seq.setVelocity(s, kVelLevels[0]);
-            continue;
-        }
-
-        const int cur  = seq.getVelocity(s);
-        const int next = clampVelLevel(cur, dir);
-        seq.setVelocity(s, next);
-    }
+void MidiInterface::adjustDefaultVelLevel(int dir) {
+    defaultVelLevel = std::clamp(defaultVelLevel + dir, 0, 2);
 }

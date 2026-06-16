@@ -50,6 +50,7 @@ int main() {
             else          midi.updateStepLeds(33);
 
             midi.updateMenuLeds();
+            midi.updateRotaryLeds();
 
             std::this_thread::sleep_for(std::chrono::milliseconds(20)); // ~50Hz
         }

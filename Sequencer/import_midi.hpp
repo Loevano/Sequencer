@@ -30,6 +30,7 @@ public:
     void updateStepLeds(int baseCC = 33);
     void updateBankLeds();
     void updateMenuLeds();
+    void updateRotaryLeds();
 
     bool isUsingMidiClock() const { return useMidiClock; }
 
@@ -50,6 +51,7 @@ private:
     int lastTickStep = -1; // previous step we emitted (for note-offs)
 
     void sendMsg3(UInt8 status, UInt8 data1, UInt8 data2);
+    void sendSysEx(const std::vector<UInt8>& data);
     void sendCC(int cc, int value);
     void sendNoteOn(int note, int vel, int channel);
     void sendNoteOff(int note, int channel);
@@ -70,6 +72,9 @@ private:
 
     // -------- Track velocity scaling (pots CC1..16) --------
     int trackVelScale[kUserChannels][16] = {}; // 0..127 per track
+    bool trackNoteOn[kUserChannels][16] = {};
+    std::chrono::steady_clock::time_point rotaryLedUntil[kUserChannels][16] = {};
+    bool rotaryLedShown[16] = {};
 
     // -------- UI state --------
     Action action = NONE;
@@ -83,20 +88,20 @@ private:
     bool blinkOn = false;
     int  blinkIntervalMs = 200;
     std::chrono::steady_clock::time_point lastBlink = std::chrono::steady_clock::now();
+    static constexpr int kRotaryPulseMs = 90;
 
     // Launch Control XL LED “string -> byte value”
     int  lcxlLedValue(std::string_view spec) const;
     void setLed(int cc, std::string_view spec);
-
-    // Held step selection (pads 33–48) for velocity editing
-    bool heldSteps[16] = { false };
+    void setRotaryLed(int index, std::string_view spec);
+    void clearRotaryLeds();
 
     static constexpr int kVelLevels[3] = { 32, 80, 120 };
-    int  clampVelLevel(int currentVel, int dir) const; // dir = +1 / -1
-    void applyVelLevelToHeld(int dir);
+    int  defaultVelLevel = 2;
+    int  defaultVelocity() const { return kVelLevels[defaultVelLevel]; }
+    void adjustDefaultVelLevel(int dir);
 
     bool pendingOff[16] = { false };
-    bool editedWhileHeld[16] = { false };
 
     int    heldStateCc = -1;              // which state button is currently held (54/55/56), or -1
     Action heldStateAction = NONE;        // which action we entered on press down

@@ -13,7 +13,7 @@ The project builds a command-line macOS tool named `Sequencer`. It creates virtu
 - Each track supports mute and solo.
 - Sends one MIDI note per track, starting at MIDI note 36 / C1.
 - Uses MIDI channels 1-16 for the 16 user banks.
-- Drives Launch Control XL LEDs to show playhead, active steps, velocity levels, selected track, and menu states.
+- Drives Launch Control XL LEDs to show playhead, active steps, velocity levels, selected track, menu states, and playing tracks.
 - Syncs to external MIDI clock by default.
 
 ## Hardware and MIDI assumptions
@@ -40,13 +40,13 @@ This is the default mode when the bank button is not held.
 | Control | MIDI CC | Behavior |
 | --- | ---: | --- |
 | Pads | 33-48 | Toggle steps on the selected track |
-| Pots | 1-16 | Scale velocity for tracks 1-16 in the active bank |
-| Send Select 1 | 49 | Raise velocity level for held steps |
-| Send Select 2 | 50 | Lower velocity level for held steps |
+| Pots | 1-16 | Scale velocity for tracks 1-16 in the active bank; LED flashes when that track's note plays |
+| Send Select 1 | 49 | Raise the default velocity level for new steps |
+| Send Select 2 | 50 | Lower the default velocity level for new steps |
 | Clear | 56 | Hold as a channel-select modifier |
 | Pads while Clear is held | 33-48 | Select active user bank / MIDI channel |
 
-Velocity editing uses three fixed levels:
+Velocity uses three fixed levels, shown by the existing low/mid/full step LED feedback:
 
 - `32`
 - `80`
