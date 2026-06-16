@@ -145,7 +145,10 @@ bool MidiInterface::initialize() {
     }
 
     if (!connectedLcxl)  std::cerr << "ERROR: Launch Control XL not connected\n";
-    if (!connectedClock) std::cerr << "WARNING: MIDI Port (clock) not connected\n";
+    if (!connectedClock) {
+        std::cerr << "WARNING: MIDI Port (clock) not connected; "
+                     "clock can still arrive through Sequencer In\n";
+    }
 
     // Fallback: connect everything if LCXL wasn't matched
     if (!connectedLcxl) {
@@ -413,6 +416,7 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
     const intptr_t srcTag = (intptr_t)srcConnRefCon;
     const bool fromLcxl  = (srcTag == SRC_LCXL);
     const bool fromClock = (srcTag == SRC_CLOCK);
+    const bool allowRealtimeClock = fromClock || !fromLcxl;
 
     const MIDIPacket* pkt = &list->packet[0];
 
@@ -428,7 +432,7 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
             // -------- System Real-Time (1 byte) --------
             if (status >= 0xF8) {
-                if (!fromClock) { idx += 1; continue; }
+                if (!allowRealtimeClock) { idx += 1; continue; }
 
                 if (self->useMidiClock) {
                     switch (status) {
