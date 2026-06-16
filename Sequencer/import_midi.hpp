@@ -61,6 +61,8 @@ private:
 
     bool anyTrackSoloed(const std::vector<Sequencer>& tracks) const;
     bool trackAudible(const Sequencer& tr, const std::vector<Sequencer>& tracks) const;
+    bool anyChannelSoloed() const;
+    bool channelAudible(int user) const;
 
     // -------- External state --------
     std::vector<std::vector<Sequencer>>* banks = nullptr;
@@ -69,6 +71,8 @@ private:
     int   activeUser = 0;
     int   selectedByUser[kUserChannels] = { 0 };
     bool  channelSelectHeld = false;
+    bool  channelMuted[kUserChannels] = {};
+    bool  channelSoloed[kUserChannels] = {};
 
     // -------- Track velocity scaling (pots CC1..16) --------
     int trackVelScale[kUserChannels][16] = {}; // 0..127 per track
@@ -100,8 +104,11 @@ private:
     int  defaultVelLevel = 2;
     int  defaultVelocity() const { return kVelLevels[defaultVelLevel]; }
     void adjustDefaultVelLevel(int dir);
+    bool adjustHeldStepVelocities(int dir);
 
     bool pendingOff[16] = { false };
+    bool stepHeld[16] = { false };
+    bool stepEditedWhileHeld[16] = { false };
 
     int    heldStateCc = -1;              // which state button is currently held (54/55/56), or -1
     Action heldStateAction = NONE;        // which action we entered on press down
@@ -109,6 +116,11 @@ private:
 
     bool exitStateOnRelease = false;
     bool soloButtonHeld = false;
+
+    Action channelAction = NONE;
+    int    heldChannelStateCc = -1;
+    Action heldChannelStateAction = NONE;
+    bool   exitChannelStateOnRelease = false;
 
     // -------- Sync / transport from MIDI clock (Ableton) --------
     bool useMidiClock = true;

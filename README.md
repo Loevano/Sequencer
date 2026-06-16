@@ -43,8 +43,12 @@ This is the default mode when the bank button is not held.
 | Pots | 1-16 | Scale velocity for tracks 1-16 in the active bank; LED flashes when that track's note plays |
 | Send Select 1 | 49 | Raise the default velocity level for new steps |
 | Send Select 2 | 50 | Lower the default velocity level for new steps |
-| Clear | 56 | Hold as a channel-select modifier |
-| Pads while Clear is held | 33-48 | Select active user bank / MIDI channel |
+| Track Select Prev | 51 | Select the previous device/track slot, stopping at 1 |
+| Track Select Next | 52 | Select the next device/track slot, stopping at 16 |
+| Clear / Record Arm | 56 | Hold as a channel/folder menu |
+| Mute while Clear / Record Arm is held | 54 | Enter or exit channel mute action |
+| Solo while Clear / Record Arm is held | 55 | Enter or exit channel solo action |
+| Pads while Clear / Record Arm is held | 33-48 | Select, mute, or solo active user banks / MIDI channels depending on current action |
 
 Velocity uses three fixed levels, shown by the existing low/mid/full step LED feedback:
 
@@ -58,7 +62,7 @@ Hold the bank button to manage tracks.
 
 | Control | MIDI CC | Behavior |
 | --- | ---: | --- |
-| Bank | 53 | Momentary bank/track-management mode |
+| Bank / Device | 53 | Momentary bank/track-management and device mode |
 | Mute | 54 | Enter or exit mute action |
 | Solo | 55 | Enter or exit solo action |
 | Clear | 56 | Enter or exit clear action |
@@ -66,6 +70,7 @@ Hold the bank button to manage tracks.
 | Solo + Clear while Bank is held | 55 + 56 | Clear all solos in the active bank |
 
 When no mute/solo/clear action is selected, pads in bank mode select the active track for the current user bank.
+When no mute/solo action is selected, pads in the Clear / Record Arm channel menu select the active user bank / MIDI channel.
 
 ## Playback and sync
 

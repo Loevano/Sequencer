@@ -16,6 +16,8 @@ static constexpr int CC_CLEAR = 56;
 
 static constexpr int CC_SEND_SELECT_1 = 49;
 static constexpr int CC_SEND_SELECT_2 = 50;
+static constexpr int CC_TRACK_SELECT_PREV = 51;
+static constexpr int CC_TRACK_SELECT_NEXT = 52;
 static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 
 static constexpr intptr_t SRC_LCXL  = 1;
@@ -250,6 +252,19 @@ bool MidiInterface::trackAudible(const Sequencer& tr, const std::vector<Sequence
     return true;
 }
 
+bool MidiInterface::anyChannelSoloed() const {
+    for (bool soloed : channelSoloed)
+        if (soloed) return true;
+    return false;
+}
+
+bool MidiInterface::channelAudible(int user) const {
+    if (user < 0 || user >= kUserChannels) return false;
+    if (channelMuted[user]) return false;
+    if (anyChannelSoloed() && !channelSoloed[user]) return false;
+    return true;
+}
+
 // ------------------------------------------------------------
 // Tick (called from MIDI clock or internal clock)
 // ------------------------------------------------------------
@@ -273,6 +288,8 @@ void MidiInterface::tickStep(int step) {
 
     // Note ON current step
     for (int u = 0; u < (int)banks->size(); ++u) {
+        if (!channelAudible(u)) continue;
+
         const auto& tracks = (*banks)[u];
         for (int t = 0; t < (int)tracks.size(); ++t) {
             const Sequencer& tr = tracks[t];
@@ -384,9 +401,13 @@ void MidiInterface::clearRotaryLeds() {
 void MidiInterface::updateMenuLeds() {
     if (!bank) return;
     setLed(CC_BANK, *bank ? "green:full" : "off");
-    setLed(CC_MUTE,  (action == MUTE)  ? "amber:full" : "off");
-    setLed(CC_SOLO,  (action == SOLO)  ? "amber:full" : "off");
-    setLed(CC_CLEAR, (action == CLEAR) ? "amber:full" : "off");
+
+    const Action shownAction = channelSelectHeld ? channelAction : action;
+    setLed(CC_MUTE, shownAction == MUTE ? "amber:full" : "off");
+    setLed(CC_SOLO, shownAction == SOLO ? "amber:full" : "off");
+
+    if (channelSelectHeld) setLed(CC_CLEAR, "green:full");
+    else                   setLed(CC_CLEAR, action == CLEAR ? "amber:full" : "off");
 }
 
 void MidiInterface::updateRotaryLeds() {
@@ -412,9 +433,28 @@ void MidiInterface::updateStepLeds(int baseCC) {
     if (selected < 0 || selected >= (int)tracks.size()) return;
 
     if (channelSelectHeld) {
-        const int count = std::min((int)tracks.size(), (int)stepCCs.size());
-        for (int i = 0; i < count; ++i)
-            setLed(stepCCs[i], (i == activeUser) ? "green:full" : "off");
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastBlink).count() >= blinkIntervalMs) {
+            blinkOn = !blinkOn;
+            lastBlink = now;
+        }
+
+        const int count = std::min(kUserChannels, (int)stepCCs.size());
+        for (int i = 0; i < count; ++i) {
+            switch (channelAction) {
+                case MUTE:
+                    if (!channelMuted[i]) setLed(stepCCs[i], "green:full");
+                    else                  setLed(stepCCs[i], blinkOn ? "red:full" : "off");
+                    break;
+                case SOLO:
+                    setLed(stepCCs[i], channelSoloed[i] ? (blinkOn ? "amber:full" : "off") : "off");
+                    break;
+                case NONE:
+                default:
+                    setLed(stepCCs[i], (i == activeUser) ? "green:full" : "off");
+                    break;
+            }
+        }
         return;
     }
 
@@ -595,6 +635,11 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                             self->heldStateAction = NONE;
                             self->soloClearedDuringHold = false;
                             self->soloButtonHeld = false;
+                            self->channelSelectHeld = false;
+                            self->channelAction = NONE;
+                            self->exitChannelStateOnRelease = false;
+                            self->heldChannelStateCc = -1;
+                            self->heldChannelStateAction = NONE;
                         }
 
                         idx += 3;
@@ -606,14 +651,78 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     // Channel select modifier (CC56) in step mode only
                     if (!inBank && cc == CC_CLEAR) {
                         self->channelSelectHeld = isPress(value);
+                        if (isRelease(value)) {
+                            self->channelAction = NONE;
+                            self->exitChannelStateOnRelease = false;
+                            self->heldChannelStateCc = -1;
+                            self->heldChannelStateAction = NONE;
+                        }
                         idx += 3;
                         continue;
                     }
 
+                    // Channel mute/solo actions while the channel-select modifier is held
+                    if (!inBank && self->channelSelectHeld && (cc == CC_MUTE || cc == CC_SOLO)) {
+                        const Action pressedAction = actionFromCc(cc);
+
+                        if (isPress(value)) {
+                            if (self->channelAction != pressedAction) {
+                                self->channelAction = pressedAction;
+                                self->exitChannelStateOnRelease = false;
+                                self->heldChannelStateCc = cc;
+                                self->heldChannelStateAction = pressedAction;
+                                idx += 3;
+                                continue;
+                            }
+
+                            self->exitChannelStateOnRelease = true;
+                            self->heldChannelStateCc = cc;
+                            self->heldChannelStateAction = pressedAction;
+                            idx += 3;
+                            continue;
+                        }
+
+                        if (isRelease(value)) {
+                            if (self->heldChannelStateCc == cc) {
+                                if (self->heldChannelStateAction == self->channelAction &&
+                                    self->exitChannelStateOnRelease) {
+                                    self->channelAction = NONE;
+                                }
+                                self->exitChannelStateOnRelease = false;
+                                self->heldChannelStateCc = -1;
+                                self->heldChannelStateAction = NONE;
+                            }
+                            idx += 3;
+                            continue;
+                        }
+                    }
+
                     // Default velocity levels (CC49/50) - step mode only, press only
                     if (!inBank && isPress(value)) {
-                        if (cc == CC_SEND_SELECT_1) { self->adjustDefaultVelLevel(+1); idx += 3; continue; }
-                        if (cc == CC_SEND_SELECT_2) { self->adjustDefaultVelLevel(-1); idx += 3; continue; }
+                        if (cc == CC_SEND_SELECT_1) {
+                            if (!self->adjustHeldStepVelocities(+1)) self->adjustDefaultVelLevel(+1);
+                            idx += 3;
+                            continue;
+                        }
+                        if (cc == CC_SEND_SELECT_2) {
+                            if (!self->adjustHeldStepVelocities(-1)) self->adjustDefaultVelLevel(-1);
+                            idx += 3;
+                            continue;
+                        }
+                    }
+
+                    // Track Select buttons: alternate selected device/track navigation.
+                    if (!inBank && isPress(value) && (cc == CC_TRACK_SELECT_PREV || cc == CC_TRACK_SELECT_NEXT)) {
+                        if (self->banks && self->activeUser >= 0 && self->activeUser < (int)self->banks->size()) {
+                            const int count = std::min((int)(*self->banks)[self->activeUser].size(), 16);
+                            if (count > 0) {
+                                const int cur = std::clamp(self->selectedByUser[self->activeUser], 0, count - 1);
+                                const int dir = (cc == CC_TRACK_SELECT_NEXT) ? 1 : -1;
+                                self->selectedByUser[self->activeUser] = std::clamp(cur + dir, 0, count - 1);
+                            }
+                        }
+                        idx += 3;
+                        continue;
                     }
 
                     // SOLO physical hold bookkeeping (menu only)
@@ -693,8 +802,21 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                 }
                             }
                         } else if (self->channelSelectHeld) {
-                            if (isPress(value) && self->banks && index < (int)self->banks->size())
-                                self->activeUser = index;
+                            if (isPress(value) && index < kUserChannels) {
+                                switch (self->channelAction) {
+                                    case MUTE:
+                                        self->channelMuted[index] = !self->channelMuted[index];
+                                        break;
+                                    case SOLO:
+                                        self->channelSoloed[index] = !self->channelSoloed[index];
+                                        break;
+                                    case NONE:
+                                    default:
+                                        if (self->banks && index < (int)self->banks->size())
+                                            self->activeUser = index;
+                                        break;
+                                }
+                            }
                         } else {
                             if (!self->banks || self->activeUser >= (int)self->banks->size()) { idx += 3; continue; }
                             auto& tracks = (*self->banks)[self->activeUser];
@@ -703,6 +825,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                             Sequencer& seq = tracks[sel];
 
                             if (isPress(value)) {
+                                self->stepHeld[index] = true;
+                                self->stepEditedWhileHeld[index] = false;
                                 if (!seq.getStepOn(index)) {
                                     seq.setStepOn(index, true);
                                     seq.setVelocity(index, self->defaultVelocity());
@@ -711,10 +835,12 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                     self->pendingOff[index] = true;
                                 }
                             } else if (isRelease(value)) {
-                                if (self->pendingOff[index]) {
+                                if (self->pendingOff[index] && !self->stepEditedWhileHeld[index]) {
                                     seq.setStepOn(index, false);
-                                    self->pendingOff[index] = false;
                                 }
+                                self->pendingOff[index] = false;
+                                self->stepHeld[index] = false;
+                                self->stepEditedWhileHeld[index] = false;
                             }
                         }
 
@@ -746,4 +872,33 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 // ------------------------------------------------------------
 void MidiInterface::adjustDefaultVelLevel(int dir) {
     defaultVelLevel = std::clamp(defaultVelLevel + dir, 0, 2);
+}
+
+bool MidiInterface::adjustHeldStepVelocities(int dir) {
+    if (!banks || activeUser < 0 || activeUser >= (int)banks->size()) return false;
+
+    auto& tracks = (*banks)[activeUser];
+    const int sel = selectedByUser[activeUser];
+    if (sel < 0 || sel >= (int)tracks.size()) return false;
+
+    Sequencer& seq = tracks[sel];
+    bool changed = false;
+
+    const int count = std::min(seq.getNumSteps(), (int)stepCCs.size());
+    for (int step = 0; step < count; ++step) {
+        if (!stepHeld[step] || !seq.getStepOn(step)) continue;
+
+        const int cur = seq.getVelocity(step);
+        int level = 0;
+        if (cur > kVelLevels[0]) level = 1;
+        if (cur > kVelLevels[1]) level = 2;
+
+        level = std::clamp(level + dir, 0, 2);
+        seq.setVelocity(step, kVelLevels[level]);
+        pendingOff[step] = false;
+        stepEditedWhileHeld[step] = true;
+        changed = true;
+    }
+
+    return changed;
 }
