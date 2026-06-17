@@ -23,8 +23,6 @@ static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 static constexpr intptr_t SRC_LCXL  = 1;
 static constexpr intptr_t SRC_CLOCK = 2;
 
-static constexpr bool kLogMidiDevices = false;
-
 // ------------------------------------------------------------
 // Helpers (device discovery / debug)
 // ------------------------------------------------------------
@@ -81,8 +79,9 @@ static Action actionFromCc(int cc) {
 // ------------------------------------------------------------
 MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                              bool* b,
-                             int* globalStep)
-: banks(allBanks), bank(b), playStep(globalStep)
+                             int* globalStep,
+                             bool debug)
+: debugLogging(debug), banks(allBanks), bank(b), playStep(globalStep)
 {
     for (int u = 0; u < kUserChannels; ++u)
         for (int t = 0; t < 16; ++t)
@@ -100,23 +99,28 @@ MidiInterface::~MidiInterface() {
 bool MidiInterface::initialize() {
     OSStatus r = noErr;
 
+    if (debugLogging) std::cerr << "CoreMIDI: creating client\n";
     r = MIDIClientCreate(CFSTR("lcxl_client"), nullptr, nullptr, &client);
     if (r != noErr) { std::cerr << "MIDIClientCreate failed\n"; return false; }
 
+    if (debugLogging) std::cerr << "CoreMIDI: creating input port\n";
     r = MIDIInputPortCreate(client, CFSTR("in"), midiCallback, this, &inputPort);
     if (r != noErr) { std::cerr << "MIDIInputPortCreate failed\n"; return false; }
 
+    if (debugLogging) std::cerr << "CoreMIDI: creating output port\n";
     r = MIDIOutputPortCreate(client, CFSTR("out"), &outputPort);
     if (r != noErr) { std::cerr << "MIDIOutputPortCreate failed\n"; return false; }
 
+    if (debugLogging) std::cerr << "CoreMIDI: creating virtual source\n";
     r = MIDISourceCreate(client, CFSTR("Sequencer Out"), &virtualSource);
     if (r != noErr) { std::cerr << "MIDISourceCreate failed\n"; return false; }
 
     // Virtual IN from Ableton (must have callback)
+    if (debugLogging) std::cerr << "CoreMIDI: creating virtual destination\n";
     r = MIDIDestinationCreate(client, CFSTR("Sequencer In"), midiCallback, this, &virtualDest);
     if (r != noErr) { std::cerr << "MIDIDestinationCreate failed\n"; return false; }
 
-    if (kLogMidiDevices) {
+    if (debugLogging) {
         printMidiSourcesOnce();
         printMidiDestinationsOnce();
     }
@@ -124,6 +128,7 @@ bool MidiInterface::initialize() {
     bool connectedLcxl  = false;
     bool connectedClock = false;
 
+    if (debugLogging) std::cerr << "CoreMIDI: scanning sources\n";
     const ItemCount nSrc = MIDIGetNumberOfSources();
     for (ItemCount i = 0; i < nSrc; ++i) {
         MIDIEndpointRef src = MIDIGetSource(i);
@@ -131,7 +136,7 @@ bool MidiInterface::initialize() {
         if (endpointNameContains(src, "Launch Control XL")) {
             if (MIDIPortConnectSource(inputPort, src, (void*)SRC_LCXL) == noErr) {
                 connectedLcxl = true;
-                if (kLogMidiDevices)
+                if (debugLogging)
                     std::cout << "Connected to Launch Control XL (Source[" << i << "])\n";
             }
         }
@@ -140,11 +145,12 @@ bool MidiInterface::initialize() {
         if (endpointNameContains(src, "MIDI Port")) {
             if (MIDIPortConnectSource(inputPort, src, (void*)SRC_CLOCK) == noErr) {
                 connectedClock = true;
-                if (kLogMidiDevices)
+                if (debugLogging)
                     std::cout << "Connected to MIDI Port (Source[" << i << "])\n";
             }
         }
     }
+    if (debugLogging) std::cerr << "CoreMIDI: source scan complete\n";
 
     if (!connectedLcxl)  std::cerr << "ERROR: Launch Control XL not connected\n";
     if (!connectedClock) {
@@ -160,10 +166,9 @@ bool MidiInterface::initialize() {
         }
     }
 
-    if (kLogMidiDevices)
+    if (debugLogging)
         std::cout << "Virtual ports created: Sequencer In (from Ableton), Sequencer Out (to Ableton)\n";
 
-    clearRotaryLeds();
     return true;
 }
 
@@ -234,6 +239,91 @@ void MidiInterface::allNotesOff() {
     }
     clearRotaryLeds();
     sendCC(123, 0); // CC123 All Notes Off (safety net)
+}
+
+// ------------------------------------------------------------
+// Clock scheduling
+// ------------------------------------------------------------
+void MidiInterface::resetClockState() {
+    midiClockPulses = 0;
+    clockStep = 0;
+    pendingSwingStep = -1;
+    pendingSwingPulse = 0;
+    earlySwingStep = -1;
+    lastTickStep = -1;
+    if (playStep) *playStep = 0;
+}
+
+int MidiInterface::currentStepCount() const {
+    if (!banks || activeUser < 0 || activeUser >= (int)banks->size()) return 0;
+
+    const auto& tracks = (*banks)[activeUser];
+    const int selected = selectedByUser[activeUser];
+    if (selected < 0 || selected >= (int)tracks.size()) return 0;
+
+    return tracks[selected].getNumSteps();
+}
+
+void MidiInterface::playPendingSwingStepIfDue() {
+    if (pendingSwingStep < 0 || midiClockPulses < pendingSwingPulse) return;
+
+    if (playStep) *playStep = pendingSwingStep;
+    tickStep(pendingSwingStep);
+
+    pendingSwingStep = -1;
+    pendingSwingPulse = 0;
+}
+
+void MidiInterface::playEarlySwingStepIfDue() {
+    const int swing = swingPulses.load();
+    if (swing >= 0 || earlySwingStep >= 0) return;
+
+    const int steps = currentStepCount();
+    if (steps <= 0) return;
+
+    const int earlyPulses = -swing;
+    if ((midiClockPulses + earlyPulses) % kPulsesPer16th != 0) return;
+
+    const int upcoming = (clockStep + 1) % steps;
+    if ((upcoming % 2) == 0) return;
+
+    if (playStep) *playStep = upcoming;
+    tickStep(upcoming);
+    earlySwingStep = upcoming;
+}
+
+void MidiInterface::scheduleOrPlayStep(int step) {
+    const int swing = swingPulses.load();
+    const bool swingStep = swing > 0 && (step % 2) == 1;
+    if (swingStep) {
+        pendingSwingStep = step;
+        pendingSwingPulse = midiClockPulses + swing;
+        return;
+    }
+
+    if (playStep) *playStep = step;
+    tickStep(step);
+}
+
+void MidiInterface::advanceMidiClockPulse() {
+    if (!transportRunning || !playStep || !banks) return;
+
+    midiClockPulses++;
+    playPendingSwingStepIfDue();
+    playEarlySwingStepIfDue();
+
+    if (midiClockPulses % kPulsesPer16th != 0) return;
+
+    const int steps = currentStepCount();
+    if (steps <= 0) return;
+
+    clockStep = (clockStep + 1) % steps;
+    if (earlySwingStep == clockStep) {
+        earlySwingStep = -1;
+        return;
+    }
+
+    scheduleOrPlayStep(clockStep);
 }
 
 // ------------------------------------------------------------
@@ -408,6 +498,33 @@ void MidiInterface::updateMenuLeds() {
 
     if (channelSelectHeld) setLed(CC_CLEAR, "green:full");
     else                   setLed(CC_CLEAR, action == CLEAR ? "amber:full" : "off");
+
+    if (*bank) {
+        std::string_view leftSwingLed = "off";
+        std::string_view rightSwingLed = "off";
+
+        const int swing = swingPulses.load();
+        const int swingMagnitude = swing < 0 ? -swing : swing;
+        if (swingMagnitude > 0) {
+            std::string_view swingLed = "amber:full";
+            if (swingMagnitude >= 2) {
+                const auto now = std::chrono::steady_clock::now();
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now.time_since_epoch()).count();
+                const int blinkMs = (swingMagnitude == 2) ? 450 : 150;
+                swingLed = ((ms / blinkMs) % 2 == 0) ? "amber:full" : "off";
+            }
+
+            if (swing < 0) leftSwingLed = swingLed;
+            else           rightSwingLed = swingLed;
+        }
+
+        setLed(CC_TRACK_SELECT_PREV, leftSwingLed);
+        setLed(CC_TRACK_SELECT_NEXT, rightSwingLed);
+    } else {
+        setLed(CC_TRACK_SELECT_PREV, "off");
+        setLed(CC_TRACK_SELECT_NEXT, "off");
+    }
 }
 
 void MidiInterface::updateRotaryLeds() {
@@ -554,41 +671,26 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     switch (status) {
                         case 0xFA: // Start
                             self->transportRunning = true;
-                            self->midiClockPulses = 0;
-                            if (self->playStep) *self->playStep = 0;
-                            self->lastTickStep = -1;
+                            self->resetClockState();
                             self->allNotesOff();
                             break;
 
                         case 0xFB: // Continue
                             self->transportRunning = true;
+                            self->clockStep = self->playStep ? *self->playStep : 0;
+                            self->pendingSwingStep = -1;
+                            self->pendingSwingPulse = 0;
+                            self->earlySwingStep = -1;
                             break;
 
                         case 0xFC: // Stop
                             self->transportRunning = false;
-                            self->midiClockPulses = 0;
-                            if (self->playStep) *self->playStep = 0;
-                            self->lastTickStep = -1;
+                            self->resetClockState();
                             self->allNotesOff();
                             break;
 
                         case 0xF8: // Clock pulse
-                            if (self->transportRunning && self->playStep && self->banks) {
-                                self->midiClockPulses++;
-                                if (self->midiClockPulses % self->kPulsesPer16th == 0) {
-                                    const int u = self->activeUser;
-                                    if (u < 0 || u >= (int)self->banks->size()) { idx += 1; continue; }
-                                    const auto& tracks = (*self->banks)[u];
-                                    const int sel = self->selectedByUser[u];
-                                    if (sel < 0 || sel >= (int)tracks.size()) { idx += 1; continue; }
-                                    const int steps = tracks[sel].getNumSteps();
-                                    if (steps > 0) {
-                                        const int next = (*self->playStep + 1) % steps;
-                                        *self->playStep = next;
-                                        self->tickStep(next);
-                                    }
-                                }
-                            }
+                            self->advanceMidiClockPulse();
                             break;
 
                         default: break;
@@ -692,6 +794,20 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                 self->heldChannelStateCc = -1;
                                 self->heldChannelStateAction = NONE;
                             }
+                            idx += 3;
+                            continue;
+                        }
+                    }
+
+                    // Swing amount (CC51/52) - bank held, press only
+                    if (inBank && isPress(value)) {
+                        if (cc == CC_TRACK_SELECT_PREV) {
+                            self->adjustSwingPulses(-1);
+                            idx += 3;
+                            continue;
+                        }
+                        if (cc == CC_TRACK_SELECT_NEXT) {
+                            self->adjustSwingPulses(+1);
                             idx += 3;
                             continue;
                         }
@@ -872,6 +988,17 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 // ------------------------------------------------------------
 void MidiInterface::adjustDefaultVelLevel(int dir) {
     defaultVelLevel = std::clamp(defaultVelLevel + dir, 0, 2);
+}
+
+void MidiInterface::adjustSwingPulses(int dir) {
+    const int swing = std::clamp(swingPulses.load() + dir, -kMaxSwingPulses, kMaxSwingPulses);
+    swingPulses.store(swing);
+    pendingSwingStep = -1;
+    pendingSwingPulse = 0;
+    earlySwingStep = -1;
+
+    std::cout << "Swing: " << (6 + swing) << "/" << (6 - swing)
+              << " MIDI clock pulses\n";
 }
 
 bool MidiInterface::adjustHeldStepVelocities(int dir) {

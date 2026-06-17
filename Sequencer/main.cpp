@@ -6,11 +6,18 @@
 #include <vector>
 #include <atomic>
 #include <iostream>
+#include <string_view>
 
-int main() {
+int main(int argc, char* argv[]) {
     constexpr int NUM_TRACKS = 16;
     constexpr int STEPS = 16;
     constexpr int USER_CHANNELS = 16;
+
+    bool debugLogging = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--debug") debugLogging = true;
+    }
 
     std::vector<std::vector<Sequencer>> banks;
     banks.resize(USER_CHANNELS);
@@ -22,7 +29,9 @@ int main() {
     bool bankMode = false;
     int globalStep = 0;
 
-    MidiInterface midi(&banks, &bankMode, &globalStep);
+    if (debugLogging) std::cerr << "Starting Sequencer...\n";
+
+    MidiInterface midi(&banks, &bankMode, &globalStep, debugLogging);
     if (!midi.initialize()) return 1;
 
     std::atomic<bool> running{true};
@@ -56,7 +65,7 @@ int main() {
         }
     });
 
-    std::cout << "Running. Ctrl+C to quit.\n";
+    std::cerr << "Running. Ctrl+C to quit.\n";
     clockThread.join();
     ledThread.join();
     return 0;

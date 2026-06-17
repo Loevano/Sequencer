@@ -63,6 +63,8 @@ Hold the bank button to manage tracks.
 | Control | MIDI CC | Behavior |
 | --- | ---: | --- |
 | Bank / Device | 53 | Momentary bank/track-management and device mode |
+| Track Select Prev while Bank is held | 51 | Decrease swing amount toward early offbeats; Track Select LEDs show current swing |
+| Track Select Next while Bank is held | 52 | Increase swing amount toward late offbeats; Track Select LEDs show current swing |
 | Mute | 54 | Enter or exit mute action |
 | Solo | 55 | Enter or exit solo action |
 | Clear | 56 | Enter or exit clear action |
@@ -84,6 +86,18 @@ The sequencer responds to:
 - MIDI Clock (`0xF8`)
 
 It advances one step every 6 MIDI clock pulses, which corresponds to 16th-note timing at the standard 24 pulses per quarter note.
+
+Swing is pulse-based and shifts odd-numbered 16th steps while keeping even steps locked to the incoming MIDI clock grid. Hold Bank and press Track Select Prev/Next to move through these settings:
+
+| Swing amount | 16th-pair timing | Track Select LEDs while Bank is held |
+| ---: | --- | --- |
+| -3 | 3 + 9 pulses | Prev fast blink |
+| -2 | 4 + 8 pulses | Prev slow blink |
+| -1 | 5 + 7 pulses | Prev solid |
+| 0 | 6 + 6 pulses | Both off |
+| 1 | 7 + 5 pulses | Next solid |
+| 2 | 8 + 4 pulses | Next slow blink |
+| 3 | 9 + 3 pulses | Next fast blink |
 
 There is also an internal clock path in `main.cpp` that advances every 150 ms, but it only runs when MIDI clock sync is disabled in code.
 
@@ -140,6 +154,12 @@ Running. Ctrl+C to quit.
 ```
 
 Stop it with `Ctrl+C`.
+
+For verbose CoreMIDI startup diagnostics and device listing, run:
+
+```sh
+./Sequencer/Sequencer --debug
+```
 
 ## Current limitations
 

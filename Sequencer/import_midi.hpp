@@ -2,6 +2,7 @@
 #pragma once
 #include <CoreMIDI/CoreMIDI.h>
 
+#include <atomic>
 #include <vector>
 #include <chrono>
 #include <string_view>
@@ -19,7 +20,8 @@ class MidiInterface {
 public:
     MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                   bool* bankMode,
-                  int* globalStep);
+                  int* globalStep,
+                  bool debugLogging = false);
 
     ~MidiInterface();
 
@@ -43,6 +45,7 @@ private:
     MIDIClientRef   client     = 0;
     MIDIEndpointRef virtualSource = 0; // OUT to Ableton (Ableton sees as MIDI IN)
     MIDIEndpointRef virtualDest   = 0; // IN from Ableton  (Ableton sees as MIDI OUT)
+    bool debugLogging = false;
 
     static void midiCallback(const MIDIPacketList*, void* refCon, void* srcConnRefCon);
 
@@ -126,7 +129,21 @@ private:
     bool useMidiClock = true;
     bool transportRunning = false;
     int  midiClockPulses = 0;
+    int  clockStep = 0;
+    std::atomic<int> swingPulses{0}; // -3=3/9, 0=straight, 3=9/3
+    int  pendingSwingStep = -1;
+    int  pendingSwingPulse = 0;
+    int  earlySwingStep = -1;
 
     static constexpr int kPulsesPerQuarter = 24;
     static constexpr int kPulsesPer16th    = 6;
+    static constexpr int kMaxSwingPulses   = 3;
+
+    void resetClockState();
+    void advanceMidiClockPulse();
+    void scheduleOrPlayStep(int step);
+    void playPendingSwingStepIfDue();
+    void playEarlySwingStepIfDue();
+    int  currentStepCount() const;
+    void adjustSwingPulses(int dir);
 };
