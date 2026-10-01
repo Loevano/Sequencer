@@ -7,6 +7,15 @@
 #include <atomic>
 #include <iostream>
 #include <string_view>
+#include <csignal>
+
+namespace {
+volatile std::sig_atomic_t stopRequested = 0;
+
+void requestStop(int) {
+    stopRequested = 1;
+}
+}
 
 int main(int argc, char* argv[]) {
     constexpr int NUM_TRACKS = 16;
@@ -34,6 +43,8 @@ int main(int argc, char* argv[]) {
     MidiInterface midi(&banks, &bankMode, &globalStep, debugLogging);
     if (!midi.initialize()) return 1;
 
+    std::signal(SIGINT, requestStop);
+    std::signal(SIGTERM, requestStop);
     std::atomic<bool> running{true};
 
     std::thread clockThread([&](){
@@ -66,6 +77,9 @@ int main(int argc, char* argv[]) {
     });
 
     std::cerr << "Running. Ctrl+C to quit.\n";
+    while (!stopRequested)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    running = false;
     clockThread.join();
     ledThread.join();
     return 0;

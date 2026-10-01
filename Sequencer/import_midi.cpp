@@ -18,6 +18,8 @@ static constexpr int CC_SEND_SELECT_1 = 49;
 static constexpr int CC_SEND_SELECT_2 = 50;
 static constexpr int CC_TRACK_SELECT_PREV = 51;
 static constexpr int CC_TRACK_SELECT_NEXT = 52;
+static constexpr int CC_FADER_FIRST = 25;
+static constexpr int CC_FADER_LAST = 32;
 static constexpr UInt8 MIDI_CH = 0; // 0 = channel 1
 
 static constexpr intptr_t SRC_LCXL  = 1;
@@ -83,15 +85,22 @@ MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                              bool debug)
 : debugLogging(debug), banks(allBanks), bank(b), playStep(globalStep)
 {
-    for (int u = 0; u < kUserChannels; ++u)
+    for (int u = 0; u < kUserChannels; ++u) {
         for (int t = 0; t < 16; ++t)
             trackVelScale[u][t] = 127;
+        for (int t = 0; t < 8; ++t)
+            faderVelScale[u][t] = 127;
+    }
 }
 
 MidiInterface::~MidiInterface() {
     if (inputPort)     MIDIPortDispose(inputPort);
-    if (outputPort)    MIDIPortDispose(outputPort);
     if (virtualDest)   MIDIEndpointDispose(virtualDest);
+    if (outputPort) {
+        allNotesOff();
+        for (int cc = 33; cc <= CC_CLEAR; ++cc) setLed(cc, "off");
+        MIDIPortDispose(outputPort);
+    }
     if (virtualSource) MIDIEndpointDispose(virtualSource);
     if (client)        MIDIClientDispose(client);
 }
@@ -390,6 +399,7 @@ void MidiInterface::tickStep(int step) {
 
                 // apply per-track pot scale (CC1..16)
                 if (t < 16) vel = (vel * trackVelScale[u][t]) / 127;
+                if (t < 8) vel = (vel * faderVelScale[u][t]) / 127;
 
                 if (vel > 0) {
                     sendNoteOn(trackToNote(t), vel, u);
@@ -721,6 +731,15 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                         const int t = cc - 1;
                         if (self->banks && self->activeUser < (int)self->banks->size()) {
                             self->trackVelScale[self->activeUser][t] = std::clamp(value, 0, 127);
+                        }
+                        idx += 3;
+                        continue;
+                    }
+
+                    if (cc >= CC_FADER_FIRST && cc <= CC_FADER_LAST) {
+                        const int t = cc - CC_FADER_FIRST;
+                        if (self->banks && self->activeUser < (int)self->banks->size()) {
+                            self->faderVelScale[self->activeUser][t] = std::clamp(value, 0, 127);
                         }
                         idx += 3;
                         continue;
