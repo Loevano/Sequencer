@@ -83,7 +83,7 @@ private:
     bool  channelSoloed[kUserChannels] = {};
 
     // -------- Track velocity scaling (pots CC1..16) --------
-    int trackVelScale[kUserChannels][16] = {}; // 0..127 per track
+    int trackVelScale[16] = {}; // 0..127 per note track, shared across channels
     int channelFaderVelScale[8] = {}; // faders 1..8 scale MIDI channels 1..8
     int previousKnobValues[16] = {};
     int previousFaderValues[8] = {};

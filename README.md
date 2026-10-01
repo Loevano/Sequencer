@@ -33,8 +33,8 @@ If the Launch Control XL source is not found, the app falls back to connecting a
 
 Selecting User templates 1-8 on the Launch Control XL selects independent banks
 on MIDI channels 1-8. Factory templates 1-8 select banks on channels 9-16.
-Returning to a template restores its patterns, selected track, and velocity
-scales; changing templates does not erase patterns or stop other banks playing.
+Returning to a template restores its patterns and selected track; changing
+templates does not erase patterns or stop other banks playing.
 Each template must use the CC mapping below, with momentary buttons sending
 127 on press and 0 on release. Factory templates have fixed mappings and may
 not match these controls. Select a template after starting the app so it receives
@@ -49,7 +49,7 @@ This is the default mode when the bank button is not held.
 | Control | MIDI CC | Behavior |
 | --- | ---: | --- |
 | Pads | 33-48 | Toggle steps on the selected track |
-| Pots | 1-16 | Scale velocity for tracks 1-16 in the active bank; LED flashes when that track's note plays |
+| Pots | 1-16 | Scale velocity for note tracks 1-16 across all MIDI channels; LED flashes only when that track's note plays on the selected channel |
 | Third-row pots | 17-24 | Unused |
 | Faders | 25-32 | Scale all notes on MIDI channels 1-8 respectively, regardless of selected template |
 | Send Select 1 | 49 | Raise the default velocity level for new steps |
@@ -121,7 +121,10 @@ On each step:
 3. Track mute/solo state is applied.
 4. Step velocity is scaled by the matching track pot value. MIDI channels 1-8 are also scaled by their matching fader.
 
-Knob scales are stored separately for each track in each bank. Fader 1 controls
+Each knob scale is shared by the corresponding note track across all banks:
+knob 1 scales note track 1 on every MIDI channel, knob 2 scales note track 2,
+and so on through knob 16. Rotary LEDs reflect notes played only on the
+currently selected MIDI channel. Fader 1 controls
 all tracks in the MIDI channel 1 bank, fader 2 controls all tracks in channel 2,
 and so on through fader 8 / channel 8. Faders keep this assignment when you
 change templates. Channels 9-16 use only their track knob scales.
@@ -132,9 +135,9 @@ velocities and their accents.
 
 Knobs and faders use pickup to prevent sudden velocity jumps. After startup,
 move each control to full scale (127) once to take control, then set the desired
-level. When switching banks, each knob must reach or cross that bank's stored
-value before it changes the scale. Faders stay assigned to the same channels
-and do not need to be picked up again when switching banks. The controller has
+level. Knobs stay assigned to the same note tracks across all channels, and
+faders stay assigned to the same channels. Neither needs to be picked up again
+when switching banks. The controller has
 no documented request for untouched knob/fader positions, so the app cannot
 automatically read their physical values at startup.
 

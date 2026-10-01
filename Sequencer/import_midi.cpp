@@ -96,10 +96,7 @@ MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                              bool debug)
 : debugLogging(debug), banks(allBanks), bank(b), playStep(globalStep)
 {
-    for (int u = 0; u < kUserChannels; ++u) {
-        for (int t = 0; t < 16; ++t)
-            trackVelScale[u][t] = 127;
-    }
+    std::fill_n(trackVelScale, 16, 127);
     std::fill_n(channelFaderVelScale, 8, 127);
     std::fill_n(previousKnobValues, 16, -1);
     std::fill_n(previousFaderValues, 8, -1);
@@ -410,7 +407,7 @@ void MidiInterface::tickStep(int step) {
                 int vel = tr.getVelocity(step);
 
                 // apply per-track pot scale (CC1..16)
-                if (t < 16) vel = (vel * trackVelScale[u][t]) / 127;
+                if (t < 16) vel = (vel * trackVelScale[t]) / 127;
                 if (u < 8) vel = (vel * channelFaderVelScale[u]) / 127;
 
                 if (vel > 0) {
@@ -675,7 +672,6 @@ void MidiInterface::selectTemplate(int templateIndex) {
         templateIndex >= (int)banks->size()) return;
 
     activeTemplate = templateIndex;
-    if (activeUser != templateIndex) std::fill_n(knobPickedUp, 16, false);
     activeUser = templateIndex;
     if (bank) *bank = false;
     action = NONE;
@@ -800,10 +796,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     // Pots CC1..16: per-track velocity scale
                     if (cc >= 1 && cc <= 16) {
                         const int t = cc - 1;
-                        if (self->banks && self->activeUser < (int)self->banks->size()) {
-                            updatePickedUpScale(self->trackVelScale[self->activeUser][t], value,
-                                                self->previousKnobValues[t], self->knobPickedUp[t]);
-                        }
+                        updatePickedUpScale(self->trackVelScale[t], value,
+                                            self->previousKnobValues[t], self->knobPickedUp[t]);
                         idx += 3;
                         continue;
                     }
@@ -1018,11 +1012,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                         break;
                                     case NONE:
                                     default:
-                                        if (self->banks && index < (int)self->banks->size()) {
-                                            if (self->activeUser != index)
-                                                std::fill_n(self->knobPickedUp, 16, false);
+                                        if (self->banks && index < (int)self->banks->size())
                                             self->activeUser = index;
-                                        }
                                         break;
                                 }
                             }
