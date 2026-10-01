@@ -236,6 +236,7 @@ void MidiInterface::sendNoteOff(int note, int channel) {
 }
 
 void MidiInterface::allNotesOff() {
+    for (auto& notes : liveNoteOn) std::fill_n(notes, 16, false);
     if (!banks) return;
     for (int u = 0; u < (int)banks->size(); ++u) {
         const auto& tracks = (*banks)[u];
@@ -244,6 +245,35 @@ void MidiInterface::allNotesOff() {
     }
     clearRotaryLeds();
     sendCC(123, 0); // CC123 All Notes Off (safety net)
+}
+
+void MidiInterface::playLiveNote(int track) {
+    if (!banks || activeUser < 0 || activeUser >= (int)banks->size() ||
+        track < 0 || track >= (int)(*banks)[activeUser].size() || track >= 16) return;
+    if (liveNoteOn[activeUser][track]) return;
+
+    int velocity = (defaultVelocity() * trackVelScale[track]) / 127;
+    if (activeUser < 8) velocity = (velocity * channelFaderVelScale[activeUser]) / 127;
+    if (velocity == 0) return;
+
+    if (trackNoteOn[activeUser][track]) sendNoteOff(trackToNote(track), activeUser);
+    trackNoteOn[activeUser][track] = false;
+    sendNoteOn(trackToNote(track), velocity, activeUser);
+    liveNoteOn[activeUser][track] = true;
+    rotaryLedUntil[activeUser][track] = std::chrono::steady_clock::now() +
+                                      std::chrono::milliseconds(kRotaryPulseMs);
+}
+
+void MidiInterface::releaseLiveNote(int track) {
+    for (int user = 0; user < kUserChannels; ++user) {
+        if (!liveNoteOn[user][track]) continue;
+        liveNoteOn[user][track] = false;
+        if (!trackNoteOn[user][track]) sendNoteOff(trackToNote(track), user);
+    }
+}
+
+void MidiInterface::releaseLiveNotes() {
+    for (int track = 0; track < 16; ++track) releaseLiveNote(track);
 }
 
 // ------------------------------------------------------------
@@ -374,7 +404,8 @@ void MidiInterface::tickStep(int step) {
                 const Sequencer& tr = tracks[t];
                 const bool wasOn = (u < kUserChannels && t < 16 && trackNoteOn[u][t]);
                 if (tr.getStepOn(lastTickStep) || wasOn) {
-                    sendNoteOff(trackToNote(t), u);
+                    if (u >= kUserChannels || t >= 16 || !liveNoteOn[u][t])
+                        sendNoteOff(trackToNote(t), u);
                     if (u < kUserChannels && t < 16) trackNoteOn[u][t] = false;
                 }
             }
@@ -388,6 +419,7 @@ void MidiInterface::tickStep(int step) {
         const auto& tracks = (*banks)[u];
         for (int t = 0; t < (int)tracks.size(); ++t) {
             const Sequencer& tr = tracks[t];
+            if (t < 16 && liveNoteOn[u][t]) continue;
             if (!trackAudible(tr, tracks)) continue;
 
             if (tr.getStepOn(step)) {
@@ -509,7 +541,8 @@ void MidiInterface::updateMenuLeds() {
 
     const Action shownAction = channelSelectHeld ? channelAction : action;
     setLed(CC_MUTE, shownAction == MUTE ? "amber:full" : "off");
-    setLed(CC_SOLO, shownAction == SOLO ? "amber:full" : "off");
+    setLed(CC_SOLO, shownAction == SOLO ? "amber:full" :
+           (playMode && !*bank && !channelSelectHeld ? "green:full" : "off"));
 
     if (channelSelectHeld) setLed(CC_CLEAR, "green:full");
     else                   setLed(CC_CLEAR, action == CLEAR ? "amber:full" : "off");
@@ -590,6 +623,12 @@ void MidiInterface::updateStepLeds(int baseCC) {
         return;
     }
 
+    if (playMode) {
+        for (int i = 0; i < (int)stepCCs.size(); ++i)
+            setLed(stepCCs[i], liveNoteOn[activeUser][i] ? "amber:full" : "green:low");
+        return;
+    }
+
     const Sequencer& seq = tracks[selected];
     const int steps = seq.getNumSteps();
     if (steps <= 0) return;
@@ -658,6 +697,7 @@ void MidiInterface::selectTemplate(int templateIndex) {
     if (!banks || templateIndex < 0 || templateIndex >= kUserChannels ||
         templateIndex >= (int)banks->size()) return;
 
+    releaseLiveNotes();
     activeTemplate = templateIndex;
     activeUser = templateIndex;
     if (bank) *bank = false;
@@ -797,6 +837,7 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
                     // BANK (CC53) momentary
                     if (cc == CC_BANK) {
+                        if (isPress(value)) self->releaseLiveNotes();
                         if (self->bank) *self->bank = isPress(value);
 
                         if (isRelease(value)) {
@@ -821,12 +862,26 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
                     // Channel select modifier (CC56) in step mode only
                     if (!inBank && cc == CC_CLEAR) {
+                        if (isPress(value)) self->releaseLiveNotes();
                         self->channelSelectHeld = isPress(value);
                         if (isRelease(value)) {
                             self->channelAction = NONE;
                             self->exitChannelStateOnRelease = false;
                             self->heldChannelStateCc = -1;
                             self->heldChannelStateAction = NONE;
+                        }
+                        idx += 3;
+                        continue;
+                    }
+
+                    // Solo retains its menu actions; on its own it toggles live play.
+                    if (!inBank && !self->channelSelectHeld && cc == CC_SOLO) {
+                        if (isPress(value)) {
+                            self->releaseLiveNotes();
+                            self->playMode = !self->playMode;
+                            std::fill_n(self->pendingOff, 16, false);
+                            std::fill_n(self->stepHeld, 16, false);
+                            std::fill_n(self->stepEditedWhileHeld, 16, false);
                         }
                         idx += 3;
                         continue;
@@ -885,12 +940,12 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     // Default velocity levels (CC49/50) - step mode only, press only
                     if (!inBank && isPress(value)) {
                         if (cc == CC_SEND_SELECT_1) {
-                            if (!self->adjustHeldStepVelocities(+1)) self->adjustDefaultVelLevel(+1);
+                            if (self->playMode || !self->adjustHeldStepVelocities(+1)) self->adjustDefaultVelLevel(+1);
                             idx += 3;
                             continue;
                         }
                         if (cc == CC_SEND_SELECT_2) {
-                            if (!self->adjustHeldStepVelocities(-1)) self->adjustDefaultVelLevel(-1);
+                            if (self->playMode || !self->adjustHeldStepVelocities(-1)) self->adjustDefaultVelLevel(-1);
                             idx += 3;
                             continue;
                         }
@@ -973,6 +1028,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     if (it != self->stepCCs.end()) {
                         const int index = (int)std::distance(self->stepCCs.begin(), it);
 
+                        if (isRelease(value)) self->releaseLiveNote(index);
+
                         if (inBank) {
                             if (isPress(value) && self->banks && self->activeUser < (int)self->banks->size()) {
                                 auto& tracks = (*self->banks)[self->activeUser];
@@ -1002,6 +1059,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                         break;
                                 }
                             }
+                        } else if (self->playMode) {
+                            if (isPress(value)) self->playLiveNote(index);
                         } else {
                             if (!self->banks || self->activeUser >= (int)self->banks->size()) { idx += 3; continue; }
                             auto& tracks = (*self->banks)[self->activeUser];
@@ -1019,7 +1078,7 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                 } else {
                                     self->pendingOff[index] = true;
                                 }
-                            } else if (isRelease(value)) {
+                            } else if (isRelease(value) && self->stepHeld[index]) {
                                 if (self->pendingOff[index] && !self->stepEditedWhileHeld[index]) {
                                     seq.setStepOn(index, false);
                                 }

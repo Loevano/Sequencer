@@ -86,6 +86,11 @@ private:
     int trackVelScale[16] = {}; // 0..127 per note track, shared across channels
     int channelFaderVelScale[8] = {}; // faders 1..8 scale MIDI channels 1..8
     bool trackNoteOn[kUserChannels][16] = {};
+    bool liveNoteOn[kUserChannels][16] = {};
+    bool playMode = false;
+    void playLiveNote(int track);
+    void releaseLiveNote(int track);
+    void releaseLiveNotes();
     std::chrono::steady_clock::time_point rotaryLedUntil[kUserChannels][16] = {};
     bool rotaryLedShown[16] = {};
 
