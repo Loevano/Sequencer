@@ -79,17 +79,6 @@ static Action actionFromCc(int cc) {
 // ------------------------------------------------------------
 // Ctor / dtor / init
 // ------------------------------------------------------------
-static void updatePickedUpScale(int& scale, int value, int& previous, bool& pickedUp) {
-    value = std::clamp(value, 0, 127);
-    if (!pickedUp) {
-        pickedUp = value == scale ||
-                   (previous >= 0 && ((previous < scale && value > scale) ||
-                                      (previous > scale && value < scale)));
-    }
-    previous = value;
-    if (pickedUp) scale = value;
-}
-
 MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                              bool* b,
                              int* globalStep,
@@ -98,8 +87,6 @@ MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
 {
     std::fill_n(trackVelScale, 16, 127);
     std::fill_n(channelFaderVelScale, 8, 127);
-    std::fill_n(previousKnobValues, 16, -1);
-    std::fill_n(previousFaderValues, 8, -1);
 }
 
 MidiInterface::~MidiInterface() {
@@ -796,16 +783,14 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     // Pots CC1..16: per-track velocity scale
                     if (cc >= 1 && cc <= 16) {
                         const int t = cc - 1;
-                        updatePickedUpScale(self->trackVelScale[t], value,
-                                            self->previousKnobValues[t], self->knobPickedUp[t]);
+                        self->trackVelScale[t] = std::clamp(value, 0, 127);
                         idx += 3;
                         continue;
                     }
 
                     if (cc >= CC_FADER_FIRST && cc <= CC_FADER_LAST) {
                         const int channel = cc - CC_FADER_FIRST;
-                        updatePickedUpScale(self->channelFaderVelScale[channel], value,
-                                            self->previousFaderValues[channel], self->faderPickedUp[channel]);
+                        self->channelFaderVelScale[channel] = std::clamp(value, 0, 127);
                         idx += 3;
                         continue;
                     }
