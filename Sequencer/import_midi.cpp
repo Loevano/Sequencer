@@ -79,6 +79,17 @@ static Action actionFromCc(int cc) {
 // ------------------------------------------------------------
 // Ctor / dtor / init
 // ------------------------------------------------------------
+static void updatePickedUpScale(int& scale, int value, int& previous, bool& pickedUp) {
+    value = std::clamp(value, 0, 127);
+    if (!pickedUp) {
+        pickedUp = value == scale ||
+                   (previous >= 0 && ((previous < scale && value > scale) ||
+                                      (previous > scale && value < scale)));
+    }
+    previous = value;
+    if (pickedUp) scale = value;
+}
+
 MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
                              bool* b,
                              int* globalStep,
@@ -90,6 +101,8 @@ MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
             trackVelScale[u][t] = 127;
     }
     std::fill_n(channelFaderVelScale, 8, 127);
+    std::fill_n(previousKnobValues, 16, -1);
+    std::fill_n(previousFaderValues, 8, -1);
 }
 
 MidiInterface::~MidiInterface() {
@@ -662,6 +675,7 @@ void MidiInterface::selectTemplate(int templateIndex) {
         templateIndex >= (int)banks->size()) return;
 
     activeTemplate = templateIndex;
+    if (activeUser != templateIndex) std::fill_n(knobPickedUp, 16, false);
     activeUser = templateIndex;
     if (bank) *bank = false;
     action = NONE;
@@ -787,7 +801,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     if (cc >= 1 && cc <= 16) {
                         const int t = cc - 1;
                         if (self->banks && self->activeUser < (int)self->banks->size()) {
-                            self->trackVelScale[self->activeUser][t] = std::clamp(value, 0, 127);
+                            updatePickedUpScale(self->trackVelScale[self->activeUser][t], value,
+                                                self->previousKnobValues[t], self->knobPickedUp[t]);
                         }
                         idx += 3;
                         continue;
@@ -795,7 +810,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
 
                     if (cc >= CC_FADER_FIRST && cc <= CC_FADER_LAST) {
                         const int channel = cc - CC_FADER_FIRST;
-                        self->channelFaderVelScale[channel] = std::clamp(value, 0, 127);
+                        updatePickedUpScale(self->channelFaderVelScale[channel], value,
+                                            self->previousFaderValues[channel], self->faderPickedUp[channel]);
                         idx += 3;
                         continue;
                     }
@@ -1002,8 +1018,11 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                                         break;
                                     case NONE:
                                     default:
-                                        if (self->banks && index < (int)self->banks->size())
+                                        if (self->banks && index < (int)self->banks->size()) {
+                                            if (self->activeUser != index)
+                                                std::fill_n(self->knobPickedUp, 16, false);
                                             self->activeUser = index;
+                                        }
                                         break;
                                 }
                             }

@@ -85,6 +85,10 @@ private:
     // -------- Track velocity scaling (pots CC1..16) --------
     int trackVelScale[kUserChannels][16] = {}; // 0..127 per track
     int channelFaderVelScale[8] = {}; // faders 1..8 scale MIDI channels 1..8
+    int previousKnobValues[16] = {};
+    int previousFaderValues[8] = {};
+    bool knobPickedUp[16] = {};
+    bool faderPickedUp[8] = {};
     bool trackNoteOn[kUserChannels][16] = {};
     std::chrono::steady_clock::time_point rotaryLedUntil[kUserChannels][16] = {};
     bool rotaryLedShown[16] = {};

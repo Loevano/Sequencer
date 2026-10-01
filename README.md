@@ -130,6 +130,14 @@ For example, a half-scale knob and half-scale channel fader produce roughly
 one quarter of the step velocity. These controls preserve the stored step
 velocities and their accents.
 
+Knobs and faders use pickup to prevent sudden velocity jumps. After startup,
+move each control to full scale (127) once to take control, then set the desired
+level. When switching banks, each knob must reach or cross that bank's stored
+value before it changes the scale. Faders stay assigned to the same channels
+and do not need to be picked up again when switching banks. The controller has
+no documented request for untouched knob/fader positions, so the app cannot
+automatically read their physical values at startup.
+
 Track-to-note mapping starts at note 36:
 
 | Track | MIDI note |
