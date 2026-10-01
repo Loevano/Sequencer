@@ -56,6 +56,7 @@ This is the default mode when the bank button is not held.
 | Send Select 2 | 50 | Lower the default velocity level for new steps |
 | Track Select Prev | 51 | Select the previous device/track slot, stopping at 1 |
 | Track Select Next | 52 | Select the next device/track slot, stopping at 16 |
+| Solo / Play | 55 | Toggle live Play mode when no menu is held |
 | Clear / Record Arm | 56 | Hold as a channel/folder menu |
 | Mute while Clear / Record Arm is held | 54 | Enter or exit channel mute action |
 | Solo while Clear / Record Arm is held | 55 | Enter or exit channel solo action |
@@ -66,6 +67,22 @@ Velocity uses three fixed levels, shown by the existing low/mid/full step LED fe
 - `32`
 - `80`
 - `120`
+
+### Live Play mode
+
+Press Solo on its own to enter Play mode; its LED turns green. Pads 33-48
+play MIDI notes 36-51 on the selected bank's MIDI channel. Press a pad to
+send note-on and release it to send note-off. Multiple pads can play together,
+including while transport is stopped. Patterns continue playing, and live
+playing never records or changes steps. Live notes use the default velocity,
+track pots, and channel faders, and can be played even on muted tracks or channels.
+Send Select 1/2 changes the default velocity for subsequent live notes.
+
+Press Solo again to return to step editing. Bank/Device and the Clear / Record
+Arm channel menu keep their existing behavior and take priority over Play mode;
+Solo still controls solo inside those menus. Entering a menu, changing templates,
+or leaving Play mode releases held live notes. Play mode resumes after a menu
+is released and stays enabled when changing templates.
 
 ### Bank mode
 
