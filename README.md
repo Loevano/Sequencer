@@ -6,7 +6,7 @@ The project builds a command-line macOS tool named `Sequencer`. It creates virtu
 
 ## What it does
 
-- Maintains 16 user banks.
+- Maintains 16 user banks (midi channels).
 - Each bank has 16 tracks.
 - Each track has 16 steps.
 - Each step stores an on/off state plus MIDI velocity.
