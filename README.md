@@ -51,7 +51,7 @@ This is the default mode when the bank button is not held.
 | Pads | 33-48 | Toggle steps on the selected track |
 | Pots | 1-16 | Scale velocity for tracks 1-16 in the active bank; LED flashes when that track's note plays |
 | Third-row pots | 17-24 | Unused |
-| Faders | 25-32 | Additional velocity scaling for tracks 1-8 in the active bank |
+| Faders | 25-32 | Scale all notes on MIDI channels 1-8 respectively, regardless of selected template |
 | Send Select 1 | 49 | Raise the default velocity level for new steps |
 | Send Select 2 | 50 | Lower the default velocity level for new steps |
 | Track Select Prev | 51 | Select the previous device/track slot, stopping at 1 |
@@ -119,13 +119,16 @@ On each step:
 1. Notes from the previous step are turned off.
 2. Active notes on the current step are sent.
 3. Track mute/solo state is applied.
-4. Step velocity is scaled by the matching track pot value. Tracks 1-8 are also scaled by their matching fader.
+4. Step velocity is scaled by the matching track pot value. MIDI channels 1-8 are also scaled by their matching fader.
 
-Knob and fader scales are stored separately for each bank and start at full scale.
-Each scale ranges from zero (silent) to 127 (full). For example, a half-scale
-knob and half-scale fader produce roughly one quarter of the step velocity.
-These controls preserve the stored step velocities and their accents. Tracks
-9-16 use only their knob scale.
+Knob scales are stored separately for each track in each bank. Fader 1 controls
+all tracks in the MIDI channel 1 bank, fader 2 controls all tracks in channel 2,
+and so on through fader 8 / channel 8. Faders keep this assignment when you
+change templates. Channels 9-16 use only their track knob scales.
+All scales start at full scale and range from zero (silent) to 127 (full).
+For example, a half-scale knob and half-scale channel fader produce roughly
+one quarter of the step velocity. These controls preserve the stored step
+velocities and their accents.
 
 Track-to-note mapping starts at note 36:
 

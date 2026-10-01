@@ -88,9 +88,8 @@ MidiInterface::MidiInterface(std::vector<std::vector<Sequencer>>* allBanks,
     for (int u = 0; u < kUserChannels; ++u) {
         for (int t = 0; t < 16; ++t)
             trackVelScale[u][t] = 127;
-        for (int t = 0; t < 8; ++t)
-            faderVelScale[u][t] = 127;
     }
+    std::fill_n(channelFaderVelScale, 8, 127);
 }
 
 MidiInterface::~MidiInterface() {
@@ -399,7 +398,7 @@ void MidiInterface::tickStep(int step) {
 
                 // apply per-track pot scale (CC1..16)
                 if (t < 16) vel = (vel * trackVelScale[u][t]) / 127;
-                if (t < 8) vel = (vel * faderVelScale[u][t]) / 127;
+                if (u < 8) vel = (vel * channelFaderVelScale[u]) / 127;
 
                 if (vel > 0) {
                     sendNoteOn(trackToNote(t), vel, u);
@@ -795,10 +794,8 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     }
 
                     if (cc >= CC_FADER_FIRST && cc <= CC_FADER_LAST) {
-                        const int t = cc - CC_FADER_FIRST;
-                        if (self->banks && self->activeUser < (int)self->banks->size()) {
-                            self->faderVelScale[self->activeUser][t] = std::clamp(value, 0, 127);
-                        }
+                        const int channel = cc - CC_FADER_FIRST;
+                        self->channelFaderVelScale[channel] = std::clamp(value, 0, 127);
                         idx += 3;
                         continue;
                     }
