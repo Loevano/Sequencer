@@ -462,7 +462,16 @@ int MidiInterface::lcxlLedValue(std::string_view spec) const {
 }
 
 void MidiInterface::setLed(int cc, std::string_view spec) {
-    sendCC(cc, lcxlLedValue(spec));
+    int index;
+    if (cc >= 33 && cc <= 48) index = 24 + cc - 33;
+    else if (cc >= CC_BANK && cc <= CC_CLEAR) index = 40 + cc - CC_BANK;
+    else if (cc >= CC_SEND_SELECT_1 && cc <= CC_TRACK_SELECT_NEXT) index = 44 + cc - CC_SEND_SELECT_1;
+    else return;
+
+    sendSysEx({
+        0xF0, 0x00, 0x20, 0x29, 0x02, 0x11, 0x78,
+        (UInt8)activeTemplate, (UInt8)index, (UInt8)lcxlLedValue(spec), 0xF7
+    });
 }
 
 void MidiInterface::setRotaryLed(int index, std::string_view spec) {
@@ -649,6 +658,29 @@ void MidiInterface::updateBankLeds() {
 // ------------------------------------------------------------
 // MIDI callback (buttons + MIDI clock sync) [SOURCE-TAGGED]
 // ------------------------------------------------------------
+void MidiInterface::selectTemplate(int templateIndex) {
+    if (!banks || templateIndex < 0 || templateIndex >= kUserChannels ||
+        templateIndex >= (int)banks->size()) return;
+
+    activeTemplate = templateIndex;
+    activeUser = templateIndex;
+    if (bank) *bank = false;
+    action = NONE;
+    channelSelectHeld = false;
+    channelAction = NONE;
+    heldStateCc = heldChannelStateCc = -1;
+    heldStateAction = heldChannelStateAction = NONE;
+    exitStateOnRelease = exitChannelStateOnRelease = false;
+    soloButtonHeld = soloClearedDuringHold = false;
+    std::fill_n(pendingOff, 16, false);
+    std::fill_n(stepHeld, 16, false);
+    std::fill_n(stepEditedWhileHeld, 16, false);
+
+    if (debugLogging)
+        std::cout << "Template " << (templateIndex + 1)
+                  << ": MIDI channel " << (activeUser + 1) << '\n';
+}
+
 void MidiInterface::midiCallback(const MIDIPacketList* list,
                                  void* refCon,
                                  void* srcConnRefCon)
@@ -707,6 +739,32 @@ void MidiInterface::midiCallback(const MIDIPacketList* list,
                     }
                 }
 
+                idx += 1;
+                continue;
+            }
+
+            // Template notifications can span packets; realtime bytes may interrupt SysEx.
+            if (fromLcxl && status == 0xF0) {
+                self->receivingSysEx = true;
+                self->templateChangeLength = 1;
+                self->templateChangeMessage[0] = status;
+                idx += 1;
+                continue;
+            }
+            if (fromLcxl && self->receivingSysEx) {
+                if (self->templateChangeLength < 9)
+                    self->templateChangeMessage[self->templateChangeLength++] = status;
+                else
+                    self->templateChangeLength = 10;
+
+                if (status == 0xF7) {
+                    static constexpr UInt8 header[] = {0xF0, 0x00, 0x20, 0x29, 0x02, 0x11, 0x77};
+                    if (self->templateChangeLength == 9 &&
+                        std::equal(std::begin(header), std::end(header), self->templateChangeMessage))
+                        self->selectTemplate(self->templateChangeMessage[7]);
+                    self->receivingSysEx = false;
+                    self->templateChangeLength = 0;
+                }
                 idx += 1;
                 continue;
             }

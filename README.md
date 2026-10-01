@@ -31,6 +31,15 @@ MIDI clock can arrive through `Sequencer In`. The app also attempts to connect t
 
 If the Launch Control XL source is not found, the app falls back to connecting all MIDI sources, but the control mapping is still written for the Launch Control XL.
 
+Selecting User templates 1-8 on the Launch Control XL selects independent banks
+on MIDI channels 1-8. Factory templates 1-8 select banks on channels 9-16.
+Returning to a template restores its patterns, selected track, and velocity
+scales; changing templates does not erase patterns or stop other banks playing.
+Each template must use the CC mapping below, with momentary buttons sending
+127 on press and 0 on release. Factory templates have fixed mappings and may
+not match these controls. Select a template after starting the app so it receives
+the controller's template-change notification; the app initially selects bank 1.
+
 ## Control mapping
 
 ### Step mode
@@ -127,7 +136,8 @@ Track-to-note mapping starts at note 36:
 | ... | ... |
 | 16 | 51 |
 
-The active user bank determines the MIDI channel.
+Each user bank outputs on its corresponding MIDI channel. All banks play
+together; the selected bank determines which patterns and controls you edit.
 
 ## Build
 

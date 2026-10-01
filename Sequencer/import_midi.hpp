@@ -72,6 +72,11 @@ private:
     bool* bank = nullptr;
     int*  playStep = nullptr; // global playhead step
     int   activeUser = 0;
+    int   activeTemplate = 0;
+    UInt8 templateChangeMessage[9] = {};
+    int   templateChangeLength = 0;
+    bool  receivingSysEx = false;
+    void selectTemplate(int templateIndex);
     int   selectedByUser[kUserChannels] = { 0 };
     bool  channelSelectHeld = false;
     bool  channelMuted[kUserChannels] = {};
